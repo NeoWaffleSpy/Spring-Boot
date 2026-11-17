@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: demo
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/demo}
+    username: ${DB_USERNAME:demo}
+    password: ${DB_PASSWORD:demo}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+
+  jackson:
+    # Leaves null fields (e.g. the password, never returned) out of responses
+    default-property-inclusion: non_null
+
+authority:
+  jwt:
+    # Base64 key of at least 32 bytes, e.g. generated with: openssl rand -base64 32
+    secret: ${JWT_SECRET:}
+    expiration: ${JWT_EXPIRATION:1h}
+    issuer: authority
+  login:
+    max-attempts: 5
+  password:
+    bcrypt-rounds: 10
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
