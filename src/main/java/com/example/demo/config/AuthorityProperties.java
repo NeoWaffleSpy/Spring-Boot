@@ -41,5 +41,12 @@ public class AuthorityProperties {
         /** Failed attempts after which the account is locked. */
         @Min(1)
         private int maxAttempts = 5;
+
+        /**
+         * Demo mode: users whose stored password is null log in with an empty password,
+         * and an empty password on create/update is stored as null.
+         * When false, empty passwords are refused everywhere. Never enable in production.
+         */
+        private boolean allowEmptyPassword = false;
     }
 }

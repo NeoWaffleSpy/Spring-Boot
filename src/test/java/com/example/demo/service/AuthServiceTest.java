@@ -39,10 +39,11 @@ class AuthServiceTest {
     private JwtService jwtService;
     private TokenDenylist denylist;
     private AuthService authService;
+    private AuthorityProperties properties;
 
     @BeforeEach
     void setUp() {
-        AuthorityProperties properties = new AuthorityProperties();
+        properties = new AuthorityProperties();
         properties.getJwt().setSecret(Base64.getEncoder().encodeToString(new byte[32]));
         properties.getLogin().setMaxAttempts(3);
         jwtService = new JwtService(properties, clock);
@@ -125,6 +126,51 @@ class AuthServiceTest {
         assertThatThrownBy(() -> authService.login("john.doe", "secret", "ip"))
                 .isInstanceOf(AuthenticationFailedException.class)
                 .hasMessage("Account expired");
+    }
+
+    @Test
+    void nullPasswordLogsInWithEmptyPasswordWhenAllowed() {
+        properties.getLogin().setAllowEmptyPassword(true);
+        CredentialEntity user = user("unused");
+        user.setPassword(null);
+        when(repository.findByUsername("john.doe")).thenReturn(Optional.of(user));
+
+        String token = authService.login("john.doe", "", "ip");
+
+        assertThat(jwtService.parse(token).getSubject()).isEqualTo("uuid-1");
+    }
+
+    @Test
+    void nullPasswordStillRejectsNonEmptyPasswordWhenAllowed() {
+        properties.getLogin().setAllowEmptyPassword(true);
+        CredentialEntity user = user("unused");
+        user.setPassword(null);
+        when(repository.findByUsername("john.doe")).thenReturn(Optional.of(user));
+
+        assertThatThrownBy(() -> authService.login("john.doe", "anything", "ip"))
+                .isInstanceOf(AuthenticationFailedException.class)
+                .hasMessage(AuthService.INVALID_CREDENTIALS);
+    }
+
+    @Test
+    void nullPasswordIsRefusedWhenEmptyPasswordsAreNotAllowed() {
+        CredentialEntity user = user("unused");
+        user.setPassword(null);
+        when(repository.findByUsername("john.doe")).thenReturn(Optional.of(user));
+
+        assertThatThrownBy(() -> authService.login("john.doe", "", "ip"))
+                .isInstanceOf(AuthenticationFailedException.class)
+                .hasMessage(AuthService.INVALID_CREDENTIALS);
+        assertThat(user.getAttempts()).isEqualTo(1);
+    }
+
+    @Test
+    void emptyPasswordDoesNotMatchARealPasswordEvenWhenAllowed() {
+        properties.getLogin().setAllowEmptyPassword(true);
+        when(repository.findByUsername("john.doe")).thenReturn(Optional.of(user("secret")));
+
+        assertThatThrownBy(() -> authService.login("john.doe", "", "ip"))
+                .isInstanceOf(AuthenticationFailedException.class);
     }
 
     @Test

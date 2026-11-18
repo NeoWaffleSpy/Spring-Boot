@@ -27,6 +27,8 @@ authority:
     issuer: authority
   login:
     max-attempts: 5
+    # Demo only: lets users with a null password log in with an empty one
+    allow-empty-password: ${ALLOW_EMPTY_PASSWORD:false}
   password:
     bcrypt-rounds: 10
 

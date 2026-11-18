@@ -1,6 +1,7 @@
 package com.example.demo.service;
 
 import com.example.demo.api.model.Credential;
+import com.example.demo.config.AuthorityProperties;
 import com.example.demo.mapper.CredentialMapper;
 import com.example.demo.persistence.entity.CredentialEntity;
 import com.example.demo.persistence.repository.CredentialRepository;
@@ -20,6 +21,7 @@ public class UserService {
     private final CredentialRepository repository;
     private final CredentialMapper mapper;
     private final PasswordEncoder passwordEncoder;
+    private final AuthorityProperties properties;
 
     @Transactional(readOnly = true)
     public List<Credential> findAll() {
@@ -44,7 +46,7 @@ public class UserService {
             throw new BadRequestException("Username already taken: " + request.getUsername());
         }
         CredentialEntity entity = mapper.toEntity(request);
-        entity.setPassword(passwordEncoder.encode(request.getPassword()));
+        entity.setPassword(encodePassword(request.getPassword()));
         if (entity.getAttempts() == null) {
             entity.setAttempts(0);
         }
@@ -65,13 +67,27 @@ public class UserService {
             throw new BadRequestException("Username already taken: " + request.getUsername());
         }
         mapper.update(request, entity);
-        entity.setPassword(passwordEncoder.encode(request.getPassword()));
+        entity.setPassword(encodePassword(request.getPassword()));
         return mapper.toApi(entity);
     }
 
     @Transactional
     public void delete(String uuid) {
         repository.delete(loadByUuid(uuid));
+    }
+
+    /**
+     * Hashes the password. An empty password is stored as null (the "no password" convention)
+     * when {@code authority.login.allow-empty-password} is on, and refused otherwise.
+     */
+    private String encodePassword(String rawPassword) {
+        if (rawPassword.isEmpty()) {
+            if (!properties.getLogin().isAllowEmptyPassword()) {
+                throw new BadRequestException("Password must not be empty");
+            }
+            return null;
+        }
+        return passwordEncoder.encode(rawPassword);
     }
 
     private CredentialEntity loadByUuid(String uuid) {

@@ -8,6 +8,7 @@ import com.example.demo.security.JwtService;
 import com.example.demo.security.TokenDenylist;
 import com.example.demo.service.exception.AuthenticationFailedException;
 import io.jsonwebtoken.Claims;
+import jakarta.annotation.PostConstruct;
 import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
@@ -54,7 +55,7 @@ public class AuthService {
             throw new AuthenticationFailedException(INVALID_CREDENTIALS);
         }
 
-        if (!passwordEncoder.matches(password, user.getPassword())) {
+        if (!passwordMatches(password, user.getPassword())) {
             int attempts = Objects.requireNonNullElse(user.getAttempts(), 0) + 1;
             user.setAttempts(attempts);
             if (attempts >= properties.getLogin().getMaxAttempts()) {
@@ -82,6 +83,27 @@ public class AuthService {
                 .toList();
         log.info("User '{}' logged in from {}", username, clientIp);
         return jwtService.issue(user.getUuid(), user.getUsername(), roles);
+    }
+
+    /**
+     * A null stored password only matches an empty one, and only when
+     * {@code authority.login.allow-empty-password} is on. Anything else goes through bcrypt.
+     */
+    private boolean passwordMatches(String rawPassword, String storedPassword) {
+        if (storedPassword == null) {
+            // Hash anyway so null-password users can't be spotted by response time
+            passwordEncoder.encode(rawPassword);
+            return properties.getLogin().isAllowEmptyPassword() && rawPassword.isEmpty();
+        }
+        return passwordEncoder.matches(rawPassword, storedPassword);
+    }
+
+    @PostConstruct
+    void warnIfEmptyPasswordsAllowed() {
+        if (properties.getLogin().isAllowEmptyPassword()) {
+            log.warn("authority.login.allow-empty-password is ON: users without a password can log in "
+                    + "with an empty one. Demo use only.");
+        }
     }
 
     /** Revokes the token used for the current request until it expires. */
