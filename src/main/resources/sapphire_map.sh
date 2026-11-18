@@ -492,8 +492,14 @@ function addUnres(rel, ln, sc, text) {
   nU++; Ufile[nU] = rel; Uline[nU] = ln; Uscope[nU] = sc; Utext[nU] = text
 }
 
-function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, recv) {
-  t = T[i]; prev = T[i - 1]
+function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, recv, pi, ad) {
+  t = T[i]; pi = i - 1
+  if (T[pi] == ">") {   # explicit type arguments: recv.<List<Object>>name(...)
+    j = pi; ad = 0
+    while (j > 0) { if (T[j] == ">") ad++; else if (T[j] == "<") { ad--; if (ad == 0) break }; j-- }
+    if (j > 1 && T[j] == "<" && T[j - 1] == ".") pi = j - 1
+  }
+  prev = T[pi]
   if (prev == "new" || prev == "@") return
   if ((K[i - 1] == "i" && !(prev in STMT)) || prev == ">" || prev == "]") return   # declaration
   sc = curScope(); fq = ctxFq[depth]
@@ -534,7 +540,7 @@ function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, 
   }
   if (FOLLOW && inBody && t ~ /^[a-z_]/ && !(t in CTRL) && !(t in EMIT) && !(t in LISTEN)) {
     recv = ""
-    if (prev == ".") { if (K[i - 2] == "i" && T[i - 3] != ".") recv = T[i - 2]; else return }
+    if (prev == ".") { if (K[pi - 1] == "i" && T[pi - 2] != ".") recv = T[pi - 1]; else return }
     nCalls++; Cscope[nCalls] = sc; Cfq[nCalls] = fq; Crecv[nCalls] = recv; Cname[nCalls] = t; Cfile[nCalls] = rel; Cline[nCalls] = L[i]
   }
 }
@@ -556,7 +562,7 @@ function normEv(r,   ch, n, parts, k, key, m) {
 function resolveType(s, ctx,   key, n, arr, i, out, f, c, g, wn, wa, w) {
   if (s == "") return ""
   key = s SUBSEP ctx
-  if (key in RT) return RT[key]
+  if (key in RTCACHE) return RTCACHE[key]
   out = ""
   c = ctx; g = 0
   while (c != "" && g++ < 10) { if ((c "." s) in tFile) { out = c "." s; break }; c = (c in tOuter) ? tOuter[c] : "" }
@@ -573,7 +579,7 @@ function resolveType(s, ctx,   key, n, arr, i, out, f, c, g, wn, wa, w) {
       if (out == "") out = BYS[s]; else out = substr(out, 2)
     }
   }
-  RT[key] = out
+  RTCACHE[key] = out
   return out
 }
 function inList(list, x) { return index(LS list LS, LS x LS) > 0 }
@@ -873,6 +879,16 @@ aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);padding:1px 4px;border-radius:4px;word-break:break-all}
 .help{color:var(--mute);font-size:12px;margin-top:4px}
+#gwrap{position:relative;border:1px solid var(--line);border-radius:10px;background:var(--bg);height:calc(100vh - 230px);min-height:420px;overflow:hidden;margin-top:8px}
+#gsvg{width:100%;height:100%;display:block;cursor:grab;user-select:none;touch-action:none}#gsvg.pan{cursor:grabbing}
+.gn{cursor:pointer}.gn .box{fill:var(--panel);stroke-width:1.5}.gn:hover .box{fill:var(--hi)}.gn.ctr .box{stroke-width:3;fill:var(--hi)}
+.gn text{fill:var(--ink);font-size:12px}.gn text.gs{fill:var(--mute);font-size:10.5px}.gn text.ki{font-size:14px;font-weight:700}
+.s-endpoint{stroke:var(--ep)}.s-event{stroke:var(--ev)}.s-handler{stroke:var(--hd)}.s-method{stroke:var(--me)}.s-lambda{stroke:var(--la)}.s-class{stroke:var(--cl)}
+.gn text.f-endpoint{fill:var(--ep)}.gn text.f-event{fill:var(--ev)}.gn text.f-handler{fill:var(--hd)}.gn text.f-method{fill:var(--me)}.gn text.f-lambda{fill:var(--la)}.gn text.f-class{fill:var(--cl)}
+.gb rect{fill:var(--bg);stroke:var(--mute)}.gn .gb text{font-size:11px;font-weight:700;text-anchor:middle}.gn:hover .gb rect{stroke:var(--acc)}
+.ge{fill:none;stroke-width:1.5;opacity:.8}.ge.emits{stroke:var(--ev)}.ge.handled_by{stroke:var(--hd)}.ge.calls{stroke:var(--me);stroke-dasharray:5 3}.ge.via{stroke-dasharray:1.5 3}.ge.more{stroke:var(--line);stroke-dasharray:3 3}
+.gmore{cursor:pointer}.gmore rect{fill:var(--panel);stroke:var(--mute);stroke-dasharray:3 3}.gmore text{fill:var(--mute);font-size:12px;text-anchor:middle}.gmore:hover rect{stroke:var(--acc)}
+.glegend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}
 @media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}}
 </style></head><body>
 <header><h1>💎 Sapphire event map</h1><span class="meta" id="meta"></span></header>
@@ -880,12 +896,13 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 <aside>
   <input id="q" placeholder="Search endpoint, event, class, method…   ( / )" autocomplete="off">
   <div id="chips"></div>
-  <div class="navtabs"><button id="tBrowse" class="on">Browse</button><button id="tIssues">Issues</button></div>
+  <div class="navtabs"><button id="tBrowse" class="on">Browse</button><button id="tGraph">Graph</button><button id="tIssues">Issues</button></div>
   <div id="count"></div>
   <ul id="results"></ul>
 </aside>
 <section id="detail"><div class="empty">Search on the left, then pick an item to trace its chain.<br><br>
-<b>Trace forward</b> = what it triggers · <b>Trace back</b> = what leads to it</div></section>
+<b>Trace forward</b> = what it triggers · <b>Trace back</b> = what leads to it<br>
+<b>Graph</b> = the item and its links as a diagram you can expand</div></section>
 </main>
 <script>const DATA=
 EOF_HTML_HEAD
@@ -903,8 +920,9 @@ const ORDER=['endpoint','event','handler','lambda','method','class'];
 const FWD={emits:'emits',handled_by:'handled by',calls:'calls'},BWD={emits:'emitted by',handled_by:'triggered by',calls:'called by'};
 const enabled=new Set(ORDER);let selected=null,view='browse';
 $('#meta').textContent=`${DATA.meta.files} files · ${DATA.nodes.length} nodes · ${DATA.edges.length} links · generated ${DATA.meta.generated}`;
-function link(file,abs,line,text){if(!file)return'';const t=DATA.meta.link_template||'';
- const href=t.replace('{abs_path}',encodeURI(abs||'')).replace('{rel_path}',encodeURI(file)).replace('{line}',line||1);
+function hrefOf(file,abs,line){const t=DATA.meta.link_template||'';
+ return t.replace('{abs_path}',encodeURI(abs||'')).replace('{rel_path}',encodeURI(file)).replace('{line}',line||1);}
+function link(file,abs,line,text){if(!file)return'';const href=hrefOf(file,abs,line);
  return `<a class="lnk" href="${esc(href)}" title="${esc(file)}:${line}">${esc(text||(file.split('/').pop()+':'+line))}</a>`;}
 function ic(n){const k=KIND[n.kind]||['?',''];return `<span class="ic k-${n.kind}" title="${k[1]}">${k[0]}</span>`;}
 function sub(n){if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;if(n.kind==='event'){const e=(IN.get(n.id)||[]).filter(x=>x.k==='emits').length,h=(OUT.get(n.id)||[]).length;return `${e} emitter(s) · ${h} listener(s)`;}return n.cls||'';}
@@ -922,10 +940,11 @@ $('#q').oninput=renderList;
 document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('#q')){e.preventDefault();$('#q').focus();$('#q').select();}});
 function go(id){location.hash=encodeURIComponent(id);}
 window.addEventListener('hashchange',fromHash);
-function fromHash(){const id=decodeURIComponent(location.hash.slice(1));if(id&&N.has(id)){setView('browse');select(id);}}
+function fromHash(){const id=decodeURIComponent(location.hash.slice(1));if(id&&N.has(id)){if(view==='issues')setView('browse');select(id);}}
 // detail
 let dir='fwd',maxDepth=8;
 function select(id){selected=id;const n=N.get(id);renderList();
+ if(view==='graph'){drawGraph(null,true);return;}
  const roles=(n.roles||[]).filter(r=>r!==n.kind).map(r=>`<span class="badge k-${r}">${r}</span>`).join(' ');
  $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${esc(n.label)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${roles}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
@@ -975,8 +994,101 @@ function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][
   if(!path.has(e.id))walk(e.id,depth+1,new Set([...path,e.id]));}};
  walk(id,0,new Set([id]));return lines.join('\n');}
 // issues
-function setView(v){view=v;$('#tBrowse').classList.toggle('on',v==='browse');$('#tIssues').classList.toggle('on',v==='issues');}
+function setView(v){view=v;['Browse','Graph','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
 $('#tBrowse').onclick=()=>{setView('browse');selected?select(selected):null;};
+$('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
+ else $('#detail').innerHTML='<div class="empty">Pick an item on the left to center the graph on it.</div>';};
+// graph: centered on the selected item, incoming links on the left, outgoing on the right
+const G={center:null,open:new Set(),lim:new Map(),pos:new Map(),t:{x:0,y:0,k:1},hide:false,auto:true};
+const GW=210,GH=42,GX=290,GY=58,GLIM=25;
+const trunc=(s,n)=>{s=String(s??'');return s.length>n?s.slice(0,n-1)+'…':s;};
+function uniqNext(id,d){const seen=new Set(),r=[];
+ for(const e of nextOf(id,d)){if(e.id===id||seen.has(e.id)||!N.has(e.id))continue;seen.add(e.id);r.push(e);}return r;}
+function neighbours(id){const s=new Set();for(const d of ['fwd','bwd'])for(const e of uniqNext(id,d))s.add(e.id);return s;}
+// Breadth-first from the center through expanded nodes. Each node keeps the column where it was
+// first reached (outgoing = +1, incoming = -1) and its discovery order sets its row.
+function gLayout(){const c=G.center,col=new Map([[c,0]]),seq=new Map([[c,0]]),q=[c],more=[];let n=1;
+ while(q.length){const id=q.shift();if(!G.open.has(id))continue;
+  for(const [d,s] of [['bwd',-1],['fwd',1]]){const list=uniqNext(id,d),key=id+'|'+d,lim=G.lim.get(key)||GLIM;
+   for(const e of list.slice(0,lim))if(!col.has(e.id)){col.set(e.id,col.get(id)+s);seq.set(e.id,n++);q.push(e.id);}
+   if(list.length>lim)more.push({key,owner:id,d,n:list.length-lim,col:col.get(id)+s,seq:n++});}}
+ const cols=new Map(),add=o=>(cols.get(o.col)||cols.set(o.col,[]).get(o.col)).push(o);
+ for(const [id,cl] of col)add({id,col:cl,seq:seq.get(id)});more.forEach(add);
+ const pos=new Map();
+ for(const [cl,arr] of cols){arr.sort((a,b)=>a.seq-b.seq);const h=(arr.length-1)*GY;
+  arr.forEach((o,i)=>pos.set(o.key||o.id,{x:cl*GX,y:i*GY-h/2,more:o.key?o:null}));}
+ return pos;}
+function edgePath(a,b){const ax=a.x+GW/2,bx=b.x-GW/2;
+ if(bx>ax+10){const m=(ax+bx)/2;return `M${ax},${a.y}C${m},${a.y} ${m},${b.y} ${bx},${b.y}`;}
+ if(ax>bx+GW+10){const ax2=a.x-GW/2,bx2=b.x+GW/2,m=(ax2+bx2)/2;return `M${ax2},${a.y}C${m},${a.y} ${m},${b.y} ${bx2},${b.y}`;}
+ const y=Math.max(a.y,b.y)+GH/2+28;return `M${a.x},${a.y+GH/2}C${a.x},${y} ${b.x},${y} ${b.x},${b.y+GH/2}`;}
+function gSub(n){return n.kind==='endpoint'&&n.path?(n.verb||'')+' '+n.path:(n.cls||KIND[n.kind][1]);}
+function gShell(){const n=N.get(G.center),hasLinks=!!DATA.meta.link_template;
+ $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${esc(n.label)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span></div>
+ <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}</div>
+ <div class="toolbar"><button class="btn" id="gExpand">Expand one level</button><button class="btn" id="gCollapse">Collapse all</button>
+ <button class="btn" id="gFit">Fit</button><button class="btn" id="gTree">Open as tree</button>
+ <label class="sub"><input type="checkbox" id="hideCalls" ${G.hide?'checked':''}> events only</label></div>
+ <div class="help">Click a node to expand or collapse its links · double-click to center on it${hasLinks?' · Ctrl+click to open its source':''} · drag to pan, scroll to zoom</div>
+ <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
+  `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
+ <div class="glegend"><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
+ <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span><span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div>`;
+ $('#gExpand').onclick=()=>{for(const id of G.pos.keys())if(N.has(id)&&neighbours(id).size)G.open.add(id);drawGraph(null,true);};
+ $('#gCollapse').onclick=()=>{G.open=new Set([G.center]);G.lim=new Map();drawGraph(null,true);};
+ $('#gFit').onclick=()=>{gFit();gApply();};
+ $('#gTree').onclick=()=>{setView('browse');select(G.center);};
+ $('#hideCalls').onchange=e=>{G.hide=e.target.checked;drawGraph(null,true);};
+ const svg=$('#gsvg');let drag=null,clickT=null;
+ svg.addEventListener('wheel',e=>{e.preventDefault();const r=svg.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  const k=Math.min(3,Math.max(0.12,G.t.k*Math.exp(-e.deltaY*0.0015)));
+  G.t.x=mx-(mx-G.t.x)*k/G.t.k;G.t.y=my-(my-G.t.y)*k/G.t.k;G.t.k=k;G.auto=false;gApply();},{passive:false});
+ // refit when the panel gets its final size, until the user pans or zooms
+ new ResizeObserver(()=>{if(G.auto&&$('#gsvg')===svg){gFit();gApply();}}).observe(svg);
+ svg.addEventListener('pointerdown',e=>{if(e.target.closest('.gn,.gmore'))return;
+  drag={x:e.clientX,y:e.clientY,tx:G.t.x,ty:G.t.y};G.auto=false;svg.classList.add('pan');svg.setPointerCapture(e.pointerId);});
+ svg.addEventListener('pointermove',e=>{if(!drag)return;G.t.x=drag.tx+e.clientX-drag.x;G.t.y=drag.ty+e.clientY-drag.y;gApply();});
+ const endDrag=()=>{drag=null;svg.classList.remove('pan');};svg.addEventListener('pointerup',endDrag);svg.addEventListener('pointercancel',endDrag);
+ svg.addEventListener('click',e=>{const m=e.target.closest('.gmore');
+  if(m){const p=G.pos.get(m.dataset.key).more;G.lim.set(p.key,(G.lim.get(p.key)||GLIM)+GLIM);drawGraph(p.owner);return;}
+  const g=e.target.closest('.gn');if(!g)return;const id=g.dataset.id;
+  if(e.ctrlKey||e.metaKey){const n=N.get(id);if(n.file&&DATA.meta.link_template)window.open(hrefOf(n.file,n.abs,n.line));return;}
+  clearTimeout(clickT);
+  if(e.detail>1){if(id!==G.center)go(id);return;}
+  clickT=setTimeout(()=>gToggle(id),230);});}
+function gToggle(id){
+ if(G.open.has(id)){G.open.delete(id);
+  // forget expansions that are no longer reachable from the center
+  const vis=gLayout();for(const o of [...G.open])if(!vis.has(o))G.open.delete(o);}
+ else if(neighbours(id).size)G.open.add(id);else return;
+ drawGraph(id);}
+function drawGraph(anchor,fit){
+ if(G.center!==selected){G.center=selected;G.open=new Set([selected]);G.lim=new Map();G.pos=new Map();fit=true;}
+ if(!$('#gsvg')||$('#gsvg').dataset.c!==G.center){gShell();fit=true;}
+ const old=anchor&&G.pos.get(anchor),pos=gLayout();G.pos=pos;
+ const edges=[],seen=new Set();
+ for(const [id,p] of pos){if(p.more){edges.push(`<path class="ge more" d="${edgePath(p.more.d==='fwd'?pos.get(p.more.owner):p,p.more.d==='fwd'?p:pos.get(p.more.owner))}"/>`);continue;}
+  for(const e of uniqNext(id,'fwd')){if(!pos.has(e.id)||seen.has(id+'>'+e.id))continue;seen.add(id+'>'+e.id);
+   const a=N.get(id),b=N.get(e.id),k=FWD[e.k]?e.k:'calls';
+   edges.push(`<path class="ge ${k}${e.via?' via':''}" d="${edgePath(p,pos.get(e.id))}" marker-end="url(#ar-${k})"><title>${esc(a.label+' '+(FWD[e.k]||e.k)+' '+b.label+(e.f?' — '+e.f+':'+e.l:''))}</title></path>`);}}
+ const nodes=[];
+ for(const [id,p] of pos){
+  if(p.more){nodes.push(`<g class="gmore" data-key="${esc(id)}" transform="translate(${p.x-GW/2},${p.y-GH/2})"><rect width="${GW}" height="${GH}" rx="8"/><text x="${GW/2}" y="${GH/2+4}">+${p.more.n} more…</text></g>`);continue;}
+  const n=N.get(id),nb=neighbours(id),hidden=[...nb].filter(x=>!pos.has(x)).length,open=G.open.has(id);
+  let badge='';if(nb.size){const t=open&&!hidden?'−':'+'+(hidden||''),bw=Math.max(20,8+t.length*7);
+   badge=`<g class="gb" transform="translate(${GW},${GH/2})"><rect x="${-bw/2}" y="-9" width="${bw}" height="18" rx="9"/><text y="4">${t}</text></g>`;}
+  const tip=`${KIND[n.kind][1]}: ${n.label}${n.path?'\n'+(n.verb||'')+' '+n.path:''}${n.cls?'\n'+n.cls:''}${n.file?'\n'+n.file+':'+n.line:''}\n${nb.size} link(s)${hidden?', '+hidden+' hidden':''}`;
+  nodes.push(`<g class="gn${id===G.center?' ctr':''}" data-id="${esc(id)}" transform="translate(${p.x-GW/2},${p.y-GH/2})"><title>${esc(tip)}</title>
+   <rect class="box s-${n.kind}" width="${GW}" height="${GH}" rx="8"/><text class="ki f-${n.kind}" x="9" y="27">${KIND[n.kind][0]}</text>
+   <text x="31" y="18">${esc(trunc(n.label,26))}</text><text class="gs" x="31" y="33">${esc(trunc(gSub(n),31))}</text>${badge}</g>`);}
+ $('#gvp').innerHTML=edges.join('')+nodes.join('');
+ if(fit)gFit();
+ else if(old&&pos.get(anchor)){G.auto=false;const p=pos.get(anchor);G.t.x-=(p.x-old.x)*G.t.k;G.t.y-=(p.y-old.y)*G.t.k;}
+ gApply();}
+function gFit(){const svg=$('#gsvg'),W=svg.clientWidth||800,H=svg.clientHeight||500;let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+ for(const p of G.pos.values()){x0=Math.min(x0,p.x-GW/2);x1=Math.max(x1,p.x+GW/2+14);y0=Math.min(y0,p.y-GH/2);y1=Math.max(y1,p.y+GH/2+30);}
+ const k=Math.min(1.1,W/(x1-x0+60),H/(y1-y0+60));G.auto=true;G.t={k,x:W/2-(x0+x1)/2*k,y:H/2-(y0+y1)/2*k};}
+function gApply(){$('#gvp').setAttribute('transform',`translate(${G.t.x},${G.t.y}) scale(${G.t.k})`);}
 $('#tIssues').onclick=()=>{setView('issues');drawIssues();};
 function drawIssues(){const ev=DATA.nodes.filter(n=>n.kind==='event');
  const noL=ev.filter(n=>!(OUT.get(n.id)||[]).length),noE=ev.filter(n=>!(IN.get(n.id)||[]).some(e=>e.k==='emits'));
