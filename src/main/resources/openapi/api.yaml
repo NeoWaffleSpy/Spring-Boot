@@ -11,6 +11,10 @@ servers:
   - url: http://localhost:8080/api/v1
     description: Local development server
 
+# Every endpoint needs a JWT unless it says otherwise (see POST /sessions)
+security:
+  - bearerAuth: []
+
 tags:
   - name: Authentication
     description: Authentication endpoints
@@ -25,6 +29,7 @@ paths:
       summary: Login
       description: Authenticate user and return token
       operationId: loginSession
+      security: []
       requestBody:
         required: true
         content:
@@ -222,6 +227,13 @@ paths:
                 $ref: '#/components/schemas/ApiResponseCredential'
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token returned in "data" by POST /sessions
+
   schemas:
     Login:
       type: object
