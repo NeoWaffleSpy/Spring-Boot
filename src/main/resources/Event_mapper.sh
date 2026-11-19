@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  sapphire_map.sh - Map asynchronous event call chains in a Java codebase and
+#  Event_mapper.sh - Map asynchronous event call chains in a Java codebase and
 #  produce ONE self-contained, interactive HTML page (the "Bible").
 #
 #  Needs only: bash, find, awk  (Linux, macOS, WSL, Git Bash on Windows).
 #
 #  Usage:
-#     ./sapphire_map.sh /path/to/repo                    -> ./sapphire-map.html
-#     ./sapphire_map.sh /path/to/repo out.html           -> out.html
-#     ./sapphire_map.sh /path/to/repo out.html graph.json  (+ raw graph data)
+#     ./Event_mapper.sh /path/to/repo                    -> ./repo.html (folder name)
+#     ./Event_mapper.sh /path/to/repo out.html           -> out.html
+#     ./Event_mapper.sh /path/to/repo out.html graph.json  (+ raw graph data)
 #
 #  It finds:
 #    * Endpoints       methods carrying an ENDPOINT_ANNOTATIONS annotation
@@ -27,7 +27,7 @@
 # =============================================================================
 
 # ============================== CONFIG =======================================
-# Edit these lists to match Sapphire's API. Space-separated names.
+# Edit these lists to match the event API of the codebase you scan. Space-separated names.
 
 # Method names that FIRE an event:   bus.emit("x"), fire(new XEvent())...
 EMIT_METHODS="emit publish fire dispatch trigger raise"
@@ -55,6 +55,12 @@ CALLBACK_METHODS="handle onEvent on accept apply call run execute process notify
 # Folder names skipped anywhere in the tree.
 EXCLUDE_DIRS="test tests build target out generated .git node_modules"
 
+# Folder names whose content is still scanned but flagged in the page with a
+# tint and a small folder tag, as name=colour. A folder listed here is scanned
+# even if EXCLUDE_DIRS names it. Colours: orange green blue purple red yellow
+# teal pink grey, or a hex value like #c0392b.
+SPECIAL_DIRS="target=orange test=green"
+
 # 1 = follow plain method calls so chains connect; 0 = events only.
 FOLLOW_CALLS=1
 # ============================ END CONFIG =====================================
@@ -64,7 +70,7 @@ set -eu
 usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
 
 ROOT="${1:-}"
-OUT="${2:-sapphire-map.html}"
+OUT="${2:-}"
 JSON_OUT="${3:-}"
 if [ -z "$ROOT" ] || [ "$ROOT" = "-h" ] || [ "$ROOT" = "--help" ]; then usage; exit 0; fi
 if [ ! -d "$ROOT" ]; then echo "Not a directory: $ROOT" >&2; exit 1; fi
@@ -78,15 +84,21 @@ fi
 if [ -z "$AWK_BIN" ]; then echo "No awk found." >&2; exit 1; fi
 
 ROOT_ABS="$(cd "$ROOT" && pwd -P)"
+# the scanned folder's name: default output file name and page title
+NAME="$(basename "$ROOT_ABS")"
+case "$NAME" in ""|/|.) NAME="event-map" ;; esac
+if [ -z "$OUT" ]; then OUT="$NAME.html"; fi
+TITLE_HTML="$(printf '%s' "$NAME" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g')"
 ROOT_LINK="$ROOT_ABS"
 if command -v cygpath >/dev/null 2>&1; then ROOT_LINK="$(cygpath -m "$ROOT_ABS")"; fi
 
-TMP="$(mktemp -d 2>/dev/null || mktemp -d -t sapmap)"
+TMP="$(mktemp -d 2>/dev/null || mktemp -d -t evmap)"
 trap 'rm -rf "$TMP"' EXIT
 
 # ---- list Java files ---------------------------------------------------------
 PRUNE=()
 for d in $EXCLUDE_DIRS; do
+  case " $SPECIAL_DIRS " in *" $d="*) continue ;; esac   # special folders are scanned
   if [ ${#PRUNE[@]} -eq 0 ]; then PRUNE=(-name "$d"); else PRUNE+=(-o -name "$d"); fi
 done
 if [ ${#PRUNE[@]} -gt 0 ]; then
@@ -98,7 +110,7 @@ echo "Scanning $(wc -l < "$TMP/files.txt" | tr -d ' ') Java files with $AWK_BIN 
 
 # ---- the analyser (awk) ------------------------------------------------------
 read -r -d '' AWK_PROG <<'EOF_AWK' || true
-# sapphire_map analyser - portable POSIX awk (gawk, mawk, BSD/macOS awk, busybox)
+# Event_mapper analyser - portable POSIX awk (gawk, mawk, BSD/macOS awk, busybox)
 # Input : -v listfile=<file with one path per line> and config variables.
 # Output: graph JSON in -v outfile.
 
@@ -802,7 +814,7 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
   }
 
   # ---- write JSON ----
-  printf "{\"meta\":{\"root\":\"%s\",\"generated\":\"%s\",\"files\":%d},", jesc(root), jesc(generated), nFiles > outfile
+  printf "{\"meta\":{\"root\":\"%s\",\"generated\":\"%s\",\"files\":%d,\"special\":\"%s\"},", jesc(root), jesc(generated), nFiles, jesc(special_dirs) > outfile
   printf "\"edges\":[" > outfile
   first = 1; nEdges = 0
   for (key in E) {
@@ -862,7 +874,7 @@ EOF_AWK
 
 (cd "$ROOT_ABS" && LC_ALL=C "$AWK_BIN" \
   -v listfile="$TMP/files.txt" -v outfile="$TMP/graph.json" -v root="$ROOT_LINK" \
-  -v generated="$(date '+%Y-%m-%dT%H:%M:%S')" \
+  -v generated="$(date '+%Y-%m-%dT%H:%M:%S')" -v special_dirs="$SPECIAL_DIRS" \
   -v emit_methods="$EMIT_METHODS" -v listen_methods="$LISTEN_METHODS" \
   -v listen_ann="$LISTEN_ANNOTATIONS" -v ev_keys="$EVENT_ANNOTATION_KEYS" \
   -v endpoint_ann="$ENDPOINT_ANNOTATIONS" -v path_ann="$PATH_ANNOTATIONS" \
@@ -875,7 +887,9 @@ cat <<'EOF_HTML_HEAD'
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sapphire event map</title>
+EOF_HTML_HEAD
+printf '<title>%s</title>\n' "$TITLE_HTML"
+cat <<'EOF_HTML_HEAD'
 <style>
 :root{--bg:#f7f7f5;--panel:#fff;--ink:#1d1d1f;--mute:#6b6b70;--line:#e3e3e0;--hi:#eef3ff;--acc:#2f5bd3;
 --ep:#0f7b5f;--ev:#b4570b;--hd:#7a3ed1;--me:#4a5568;--la:#8a6d00;--cl:#64748b;--warn:#b42318}
@@ -939,8 +953,16 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .own{display:block;font-size:11px;font-weight:400;color:var(--mute);word-break:break-all;line-height:1.3}h2 .own{font-size:12px}
 .glegend{display:flex;gap:6px 24px;flex-wrap:wrap;justify-content:space-between;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend>div{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.glegend span{white-space:nowrap}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
 @media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}#detail.gview{display:block}#gwrap{height:65vh}}
+.h1sub{font-weight:400;color:var(--mute)}
+.sptag{display:inline-block;flex:none;align-self:center;font-size:10.5px;font-weight:600;line-height:1.5;padding:0 7px;border-radius:9px;color:var(--sp);background:color-mix(in srgb,var(--sp) 14%,transparent);white-space:nowrap;vertical-align:middle;font-family:system-ui,sans-serif}
+#results li.sp{background:color-mix(in srgb,var(--sp) 8%,transparent);box-shadow:inset 3px 0 0 color-mix(in srgb,var(--sp) 70%,transparent)}
+#results li.sp:hover,#results li.sp.sel{background:color-mix(in srgb,var(--sp) 8%,var(--hi))}#results li .sptag{margin-left:auto}
+.gn.sp .box{fill:color-mix(in srgb,var(--sp) 10%,var(--panel))}.gn.sp:hover .box,.gn.sp.ctr .box,.gn.sp.foc .box{fill:color-mix(in srgb,var(--sp) 12%,var(--hi))}
+.gsp rect{fill:color-mix(in srgb,var(--sp) 22%,var(--panel));stroke:color-mix(in srgb,var(--sp) 55%,transparent);stroke-width:1}.gn .gsp text{fill:var(--sp);font-size:9.5px;font-weight:600;text-anchor:middle}
 </style></head><body>
-<header><h1>💎 Sapphire event map</h1><span class="meta" id="meta"></span></header>
+EOF_HTML_HEAD
+printf '<header><h1>%s <span class="h1sub">event map</span></h1><span class="meta" id="meta"></span></header>\n' "$TITLE_HTML"
+cat <<'EOF_HTML_HEAD'
 <main>
 <aside>
   <input id="q" placeholder="Search endpoint, event, class, method…   ( / )" autocomplete="off">
@@ -983,6 +1005,19 @@ $('#meta').textContent=`${DATA.meta.files} files · ${DATA.nodes.length} nodes �
 function link(file,abs,line,text){if(!file)return'';
  return `<span class="lnk" title="${esc(file)}:${line}">${wb(text||(file.split('/').pop()+':'+line))}</span>`;}
 function ic(n){const k=KIND[n.kind]||['?',''];return `<span class="ic k-${n.kind}" title="${k[1]}">${k[0]}</span>`;}
+// SPECIAL_DIRS: name=colour (graph: tag on the bottom edge, the top corners hold the badges). Each gets --spN (tuned per theme); a node belongs to the first
+// listed folder found in its file path.
+const SPC={orange:['#c8762a','#e0a066'],green:['#4a9a5a','#7fc08c'],blue:['#4a78c0','#8aaee0'],purple:['#8060c0','#b49ae0'],
+ red:['#c05050','#e08e8e'],yellow:['#b08a1a','#d8bc5c'],teal:['#3a948e','#76c2bc'],pink:['#c05090','#e08ebc'],grey:['#808088','#a8a8b0']};
+const SP=new Map();String(DATA.meta.special||'').split(/\s+/).filter(Boolean).forEach(t=>{const i=t.indexOf('=');
+ const name=i<0?t:t.slice(0,i),c=i<0?'grey':t.slice(i+1).toLowerCase();if(name&&!SP.has(name))SP.set(name,{i:SP.size,c:SPC[c]||[c,c]});});
+{const st=document.createElement('style');const v=k=>[...SP.values()].map(o=>`--sp${o.i}:${o.c[k]};`).join('');
+ st.textContent=`:root{${v(0)}}@media (prefers-color-scheme:dark){:root{${v(1)}}}`;document.head.appendChild(st);}
+const SPN=new Map();
+function spOf(n){if(!n||!n.file||!SP.size)return null;if(SPN.has(n.id))return SPN.get(n.id);
+ const parts=n.file.split('/').slice(0,-1);let r=null;for(const d of parts)if(SP.has(d)){r={name:d,i:SP.get(d).i};break;}
+ SPN.set(n.id,r);return r;}
+function spTag(n){const sp=spOf(n);return sp?`<span class="sptag" style="--sp:var(--sp${sp.i})" title="From the ${esc(sp.name)}/ folder">${esc(sp.name)}</span>`:'';}
 function sub(n){if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;
  if(n.kind==='event'){const e=(IN.get(n.id)||[]).filter(x=>x.k==='emits').length,h=(OUT.get(n.id)||[]).length;
   return `${n.value!=null&&!(n.label||'').startsWith('"')?'"'+n.value+'" · ':''}${e} emitter(s) · ${h} listener(s)`;}
@@ -996,7 +1031,7 @@ function renderList(){const toks=$('#q').value.toLowerCase().split(/\s+/).filter
  let r=DATA.nodes.filter(n=>enabled.has(n.kind)&&toks.every(t=>hay.get(n.id).includes(t)));
  r.sort((a,b)=>ORDER.indexOf(a.kind)-ORDER.indexOf(b.kind)||a.label.localeCompare(b.label));
  $('#count').textContent=r.length+' result(s)'+(r.length>400?' – showing 400':'');
- $('#results').innerHTML=r.slice(0,400).map(n=>`<li data-id="${esc(n.id)}" class="${n.id===selected?'sel':''}">${ic(n)}<div><div>${nameHtml(n)}</div><div class="sub">${esc(sub(n))}</div></div></li>`).join('');}
+ $('#results').innerHTML=r.slice(0,400).map(n=>{const sp=spOf(n);return `<li data-id="${esc(n.id)}" class="${n.id===selected?'sel':''}${sp?' sp':''}"${sp?` style="--sp:var(--sp${sp.i})"`:''}>${ic(n)}<div><div>${nameHtml(n)}</div><div class="sub">${esc(sub(n))}</div></div>${spTag(n)}</li>`;}).join('');}
 $('#results').onclick=e=>{const li=e.target.closest('li');if(li)go(li.dataset.id);};
 $('#q').oninput=renderList;
 document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('#q')){e.preventDefault();$('#q').focus();$('#q').select();}});
@@ -1008,7 +1043,7 @@ let dir='fwd',maxDepth=8;
 function select(id){selected=id;const n=N.get(id);renderList();
  if(view==='graph'){drawGraph(null,true);return;}
  const roles=(n.roles||[]).filter(r=>r!==n.kind).map(r=>`<span class="badge k-${r}">${r}</span>`).join(' ');
- $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${roles}</div>
+ $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${spTag(n)}${roles}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
  <div class="toolbar"><button class="btn" data-d="fwd">Trace forward ▶</button><button class="btn" data-d="bwd">◀ Trace back</button>
  <span class="sub">depth</span><select id="depth">${[2,3,4,6,8,12,20].map(d=>`<option ${d===maxDepth?'selected':''}>${d}</option>`).join('')}</select>
@@ -1042,7 +1077,7 @@ function drawTree(){document.querySelectorAll('[data-d]').forEach(b=>b.classList
  const t=$('#tree');t.innerHTML='';fill(t,selected,0,new Set([selected]));if(!t.children.length)t.innerHTML='<li class="sub">Nothing found in this direction.</li>';}
 function fill(ul,id,depth,path){for(const e of nextOf(id,dir)){const n=N.get(e.id);if(!n)continue;const li=document.createElement('li');
  const lab=(dir==='fwd'?FWD:BWD)[e.k]+(e.via?' (via calls)':'');
- const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span>${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
+ const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span>${spTag(n)}${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
  const kids=nextOf(e.id,dir);
  if(path.has(e.id)){li.className='leaf';li.innerHTML=row+' <span class="cyc">↻ cycle</span>';}
  else if(!kids.length){li.className='leaf';li.innerHTML=row;}
@@ -1055,7 +1090,7 @@ const ABS=new Map(DATA.nodes.filter(n=>n.file).map(n=>[n.file,n.abs]));function 
 function expandAll(root,budget){let opened=0;const step=()=>{const closed=[...root.querySelectorAll('details:not([open])')];if(!closed.length||opened>1500)return;
  closed.forEach(d=>{d.open=true;opened++;});setTimeout(step,0);};step();}
 $('#detail').addEventListener('click',e=>{const x=e.target.closest('.nm');if(x){e.preventDefault();go(x.dataset.id);}});
-function drawDirect(n){const rows=(list,lbl)=>list.map(e=>{const m=N.get(e.id);return m?`<tr><td>${esc(lbl[e.k])}${asTag(e)}</td><td><span class="row">${ic(m)}<span class="nm" data-id="${esc(m.id)}">${nameHtml(m)}</span></span></td><td>${link(e.f,absOf(e.f),e.l)}</td></tr>`:''}).join('');
+function drawDirect(n){const rows=(list,lbl)=>list.map(e=>{const m=N.get(e.id);return m?`<tr><td>${esc(lbl[e.k])}${asTag(e)}</td><td><span class="row">${ic(m)}<span class="nm" data-id="${esc(m.id)}">${nameHtml(m)}</span>${spTag(m)}</span></td><td>${link(e.f,absOf(e.f),e.l)}</td></tr>`:''}).join('');
  const o=OUT.get(n.id)||[],i=IN.get(n.id)||[];
  $('#direct').innerHTML=`<h3>Direct links</h3><table><tr><th>Relation</th><th>Item</th><th>Where</th></tr>${rows(i,BWD)}${rows(o,FWD)||''}${!o.length&&!i.length?'<tr><td colspan=3 class="sub">none</td></tr>':''}</table>`;}
 function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][1]}: ${n.label}${n.path?' ['+(n.verb||'')+' '+n.path+']':''}  (${n.file||''}:${n.line||''})`);
@@ -1091,7 +1126,7 @@ function shapeD(kind,w,h){const r=Math.min(h/2,23),s=Math.round(Math.min(h,50)*.
 const PAD={endpoint:15,event:15,handler:17,lambda:12,method:10,class:11};
 // text measuring, with the page font
 const MC=document.createElement('canvas').getContext('2d');let FAM=null;
-const FSZ={gp:'10px',gm:'600 12.5px',gs:'10.5px',gal2:'italic 10px',gal:'italic 10.5px'};
+const FSZ={gsp:'600 9.5px',gp:'10px',gm:'600 12.5px',gs:'10.5px',gal2:'italic 10px',gal:'italic 10.5px'};
 function tw(s,c){FAM=FAM||getComputedStyle(document.body).fontFamily;MC.font=FSZ[c]+' '+FAM;return MC.measureText(s).width;}
 // break points: after . _ , ( / : # - and at camelCase humps (fooBar, HTTPServer)
 function segs(s){const out=[];let cur='';for(let i=0;i<s.length;i++){const a=s[i-1],b=s[i],c=s[i+1];
@@ -1157,18 +1192,17 @@ function gShell(){const n=N.get(G.center);
  const shapes=ORDER.map(k=>`<span><svg width="28" height="14"><path class="s-${k}" d="${shapeD(k,28,14)}" style="fill:var(--panel);stroke-width:1.4"/>${k==='class'?`<path class="s-class" transform="translate(2,2)" d="${shapeD(k,24,10)}" style="fill:none;stroke-width:1"/>`:''}</svg>${KIND[k][1]}</span>`).join('');
  $('#detail').innerHTML=`<div id="ghead"></div>
  <div class="toolbar"><button class="btn" id="gExpB" title="Open the incoming links of every node shown">◀ Expand all</button><button class="btn" id="gExpF" title="Open the outgoing links of every node shown">Expand all ▶</button>
- <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button><button class="btn" id="gTree">Open as tree</button>
+ <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button>
  <label class="sub"><input type="checkbox" id="hideCalls" ${G.hide?'checked':''}> events only</label></div>
  <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
  <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
   `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
- <div class="glegend"><div>${shapes}</div><div><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
+ <div class="glegend"><div>${shapes}${[...SP].map(([d,o])=>`<span class="sptag" style="--sp:var(--sp${o.i})">${esc(d)}</span>`).join('')}</div><div><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
  <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span><span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div></div>`;
  const expandAll=d=>{for(const id of G.pos.keys())if(N.has(id)&&uniqNext(id,d).length)G.open.add(id+'|'+d);drawGraph(null,true);};
  $('#gExpB').onclick=()=>expandAll('bwd');$('#gExpF').onclick=()=>expandAll('fwd');
  $('#gCollapse').onclick=()=>{G.open=new Set([G.center+'|bwd',G.center+'|fwd']);G.lim=new Map();drawGraph(null,true);};
  $('#gFit').onclick=()=>{gFit();gApply();};
- $('#gTree').onclick=()=>{setView('browse');select(G.center);};
  $('#hideCalls').onchange=e=>{G.hide=e.target.checked;drawGraph(null,true);};
  const svg=$('#gsvg');let drag=null;
  svg.addEventListener('wheel',e=>{e.preventDefault();const r=svg.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
@@ -1221,9 +1255,11 @@ function drawGraph(anchor,fit){
   const txt=p.lines.map(([c,s],i)=>`<text class="${c}" x="${tx}" y="${y0+i*LH}">${esc(s)}</text>`).join('');
   const nin=uniqNext(id,'bwd').length,nout=uniqNext(id,'fwd').length;
   const tip=`${KIND[n.kind][1]}: ${n.label}${n.value!=null?'\n"'+n.value+'"':''}${n.path?'\n'+(n.verb||'')+' '+n.path:''}${n.cls?'\n'+n.cls:''}${n.file?'\n'+n.file+':'+n.line:''}\n${nin} incoming · ${nout} outgoing`;
-  nodes.push(`<g class="gn${id===G.center?' ctr':''}" data-id="${esc(id)}" transform="translate(${p.x-w/2},${p.y-h/2})"><title>${esc(tip)}</title>
+  const sp=spOf(n),tw2=sp?Math.ceil(tw(sp.name,'gsp'))+12:0;
+  const spg=sp?`<g class="gsp" transform="translate(${w-tw2-pad-6},${h-7})"><rect width="${tw2}" height="14" rx="7"/><text x="${tw2/2}" y="10">${esc(sp.name)}</text></g>`:'';
+  nodes.push(`<g class="gn${id===G.center?' ctr':''}${sp?' sp':''}"${sp?` style="--sp:var(--sp${sp.i})"`:''} data-id="${esc(id)}" transform="translate(${p.x-w/2},${p.y-h/2})"><title>${esc(tip+(sp?'\nFrom the '+sp.name+'/ folder':''))}</title>
    <path class="box s-${n.kind}" d="${shapeD(n.kind,w,h)}"/>${n.kind==='class'?`<path class="box2 s-class" transform="translate(3,3)" d="${shapeD('class',w-6,h-6)}"/>`:''}
-   <text class="ki f-${n.kind}" x="${pad}" y="${h/2+5}">${KIND[n.kind][0]}</text>${txt}${gBadge(id,'bwd',pos,w)}${gBadge(id,'fwd',pos,w)}</g>`);}
+   <text class="ki f-${n.kind}" x="${pad}" y="${h/2+5}">${KIND[n.kind][0]}</text>${txt}${spg}${gBadge(id,'bwd',pos,w)}${gBadge(id,'fwd',pos,w)}</g>`);}
  $('#gvp').innerHTML=edges.join('')+nodes.join('')+labels.join('');
  if(fit)gFit();
  else if(old&&pos.get(anchor)){G.auto=false;const p=pos.get(anchor);G.t.x-=(p.x-old.x)*G.t.k;G.t.y-=(p.y-old.y)*G.t.k;}
@@ -1237,7 +1273,7 @@ function gHighlight(){const vp=$('#gvp');if(!vp)return;vp.querySelectorAll('.hl,
 // the top of the graph view describes the selected node, or the center when nothing is selected
 function gInfo(){const box=$('#ghead');if(!box)return;const n=N.get(G.focus||G.center),sel=!!G.focus&&G.focus!==G.center;
  const al=aliasesOf(n);
- box.innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
+ box.innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${spTag(n)}${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}${al.length?` · <span class="alias" title="${esc(al.map(a=>a.name+' = '+a.to+(a.missing?' (target not found)':'')).join(' · '))}">≡ ${esc(al.map(a=>short(a.name)).join(', '))}</span>`:''}</div>`;}
 // "ClassName.member" on two lines: the owner small and grey above, the member below
 function nameHtml(n){const [own,mem]=splitName(n);return twoLines(own,mem);}
@@ -1256,7 +1292,7 @@ $('#tIssues').onclick=()=>{setView('issues');drawIssues();};
 function drawIssues(){const ev=DATA.nodes.filter(n=>n.kind==='event');
  const noL=ev.filter(n=>!(OUT.get(n.id)||[]).length),noE=ev.filter(n=>!(IN.get(n.id)||[]).some(e=>e.k==='emits'));
  const deadEp=DATA.nodes.filter(n=>n.kind==='endpoint'&&!(OUT.get(n.id)||[]).length);
- const lst=a=>a.length?`<table>${a.map(n=>`<tr><td><span class="row">${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span></span></td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`).join('')}</table>`:'<div class="sub">none 🎉</div>';
+ const lst=a=>a.length?`<table>${a.map(n=>`<tr><td><span class="row">${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span>${spTag(n)}</span></td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`).join('')}</table>`:'<div class="sub">none 🎉</div>';
  $('#detail').innerHTML=`<div class="title"><h2>Issues & blind spots</h2></div>
  <div class="section"><h3>Events emitted but never listened to (${noL.length})</h3>${lst(noL)}</div>
  <div class="section"><h3>Events listened to but never emitted (${noE.length})</h3><div class="help">Often emitted with a dynamic name — check "unresolved" below.</div>${lst(noE)}</div>
