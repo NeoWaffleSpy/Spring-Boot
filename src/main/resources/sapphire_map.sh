@@ -1026,7 +1026,15 @@ function hideCalls(){return $('#hideCalls')&&$('#hideCalls').checked;}
 function nextOf(id,d){const raw=(d==='fwd'?OUT:IN).get(id)||[];if(!hideCalls())return raw;
  const out=[],seen=new Set([id]),q=[...raw];
  while(q.length){const e=q.shift();if(seen.has(e.id))continue;seen.add(e.id);
-  if(e.k==='calls'){const more=(d==='fwd'?OUT:IN).get(e.id)||[];q.push(...more.map(m=>({...m,via:true})));}
+  if(d==='bwd'){
+   // going back, stop at the nearest trigger (handler, endpoint, lambda, event, class); a plain
+   // method is replaced by its callers, keeping the first link's kind (e.g. "emitted by")
+   const n=N.get(e.id);if(!n||n.kind!=='method'){out.push(e);continue;}
+   const up=(IN.get(e.id)||[]).filter(m=>m.k==='calls');
+   if(up.length)q.push(...up.map(m=>({...m,k:e.k,via:true,a:e.a||m.a})));
+   else out.push(e);   // nobody calls it: it is where the chain starts
+   continue;}
+  if(e.k==='calls'){const more=OUT.get(e.id)||[];q.push(...more.map(m=>({...m,via:true})));}
   else out.push(e);}
  return out;}
 function drawTree(){document.querySelectorAll('[data-d]').forEach(b=>b.classList.toggle('on',b.dataset.d===dir));
