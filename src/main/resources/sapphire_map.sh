@@ -55,12 +55,6 @@ CALLBACK_METHODS="handle onEvent on accept apply call run execute process notify
 # Folder names skipped anywhere in the tree.
 EXCLUDE_DIRS="test tests build target out generated .git node_modules"
 
-# How file:line links open. Placeholders: {abs_path} {rel_path} {line}
-#   VS Code : vscode://file/{abs_path}:{line}
-#   IntelliJ: idea://open?file={abs_path}&line={line}
-#   GitLab  : https://gitlab.example.com/group/repo/-/blob/main/{rel_path}#L{line}
-LINK_TEMPLATE="vscode://file/{abs_path}:{line}"
-
 # 1 = follow plain method calls so chains connect; 0 = events only.
 FOLLOW_CALLS=1
 # ============================ END CONFIG =====================================
@@ -808,7 +802,7 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
   }
 
   # ---- write JSON ----
-  printf "{\"meta\":{\"root\":\"%s\",\"generated\":\"%s\",\"files\":%d,\"link_template\":\"%s\"},", jesc(root), jesc(generated), nFiles, jesc(link_template) > outfile
+  printf "{\"meta\":{\"root\":\"%s\",\"generated\":\"%s\",\"files\":%d},", jesc(root), jesc(generated), nFiles > outfile
   printf "\"edges\":[" > outfile
   first = 1; nEdges = 0
   for (key in E) {
@@ -868,7 +862,7 @@ EOF_AWK
 
 (cd "$ROOT_ABS" && LC_ALL=C "$AWK_BIN" \
   -v listfile="$TMP/files.txt" -v outfile="$TMP/graph.json" -v root="$ROOT_LINK" \
-  -v generated="$(date '+%Y-%m-%dT%H:%M:%S')" -v link_template="$LINK_TEMPLATE" \
+  -v generated="$(date '+%Y-%m-%dT%H:%M:%S')" \
   -v emit_methods="$EMIT_METHODS" -v listen_methods="$LISTEN_METHODS" \
   -v listen_ann="$LISTEN_ANNOTATIONS" -v ev_keys="$EVENT_ANNOTATION_KEYS" \
   -v endpoint_ann="$ENDPOINT_ANNOTATIONS" -v path_ann="$PATH_ANNOTATIONS" \
@@ -910,16 +904,17 @@ aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-
 .empty{color:var(--mute);margin-top:40px;text-align:center}
 .title{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.title h2{margin:0;font-size:19px;word-break:break-all}
 .badge{font-size:11px;border-radius:4px;padding:1px 7px;border:1px solid currentColor}
-.loc a,.lnk{color:var(--acc);text-decoration:none;font-size:12px}.loc a:hover,.lnk:hover{text-decoration:underline}
+.lnk{color:var(--mute);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .toolbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:16px 0 10px}
 .toolbar select{font:inherit;font-size:12px;padding:3px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .tree,.tree ul{list-style:none;margin:0;padding-left:18px}.tree{padding-left:0}
 .tree li{margin:2px 0}.tree summary{cursor:pointer;list-style:none}.tree summary::-webkit-details-marker{display:none}
 .tree summary:before{content:'▸';display:inline-block;width:14px;color:var(--mute)}.tree details[open]>summary:before{content:'▾'}
 .leaf{padding-left:14px}
-.row{display:inline-flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+.row{display:inline-flex;gap:6px;align-items:center;max-width:100%}.row>*{min-width:0}.row>.ic,.row>.elabel,.row>.alias{flex:none}
+code.nm2{display:inline-block;vertical-align:middle}code.nm2 .own{font-size:10.5px}
 .elabel{font-size:11px;color:var(--mute);min-width:70px}
-.nm{cursor:pointer;font-weight:500}.nm:hover{text-decoration:underline}
+.nm{cursor:pointer;font-weight:500;display:inline-block;max-width:100%}.nm:hover{text-decoration:underline}
 .cyc{color:var(--warn);font-size:12px}
 .section h3{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);margin:20px 0 6px}
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
@@ -974,8 +969,8 @@ const short=s=>String(s).split('.').pop();
 // the alias written in the code when an emit / listener used one
 const asTag=e=>e.a?` <span class="alias" title="Written in the code as the alias ${esc(e.a)}">as ${esc(e.a)}</span>`:'';
 function akaHtml(n){const list=akaOf(n);if(!list.length)return'';
- return `<div class="section"><h3>Names in code (${list.length})</h3><table>${list.map(a=>`<tr><td><code>${esc(a.name)}</code></td><td>${a.to
-  ?`<span class="alias">alias of</span> <code>${esc(a.to)}</code>${a.missing?' <span class="cyc">target not found</span>':''}`
+ return `<div class="section"><h3>Names in code (${list.length})</h3><table>${list.map(a=>`<tr><td><code class="nm2">${nameStr(a.name)}</code></td><td>${a.to
+  ?`<span class="alias">alias of</span> <code class="nm2">${nameStr(a.to)}</code>${a.missing?' <span class="cyc">target not found</span>':''}`
   :`= <code>"${esc(n.value)}"</code>`}</td><td>${link(a.file,absOf(a.file),a.line)}</td></tr>`).join('')}</table>
   ${aliasesOf(n).length?'<div class="help">Emits and listeners using any of these names are merged into this event.</div>':''}</div>`;}
 const KIND={endpoint:['🌐','Endpoint'],event:['⚡','Event'],handler:['🎧','Handler'],method:['ƒ','Method'],lambda:['λ','Lambda'],class:['◆','Class']};
@@ -983,10 +978,9 @@ const ORDER=['endpoint','event','handler','lambda','method','class'];
 const FWD={emits:'emits',handled_by:'handled by',calls:'calls'},BWD={emits:'emitted by',handled_by:'triggered by',calls:'called by'};
 const enabled=new Set(ORDER);let selected=null,view='browse';
 $('#meta').textContent=`${DATA.meta.files} files · ${DATA.nodes.length} nodes · ${DATA.edges.length} links · generated ${DATA.meta.generated}`;
-function hrefOf(file,abs,line){const t=DATA.meta.link_template||'';
- return t.replace('{abs_path}',encodeURI(abs||'')).replace('{rel_path}',encodeURI(file)).replace('{line}',line||1);}
-function link(file,abs,line,text){if(!file)return'';const href=hrefOf(file,abs,line);
- return `<a class="lnk" href="${esc(href)}" title="${esc(file)}:${line}">${esc(text||(file.split('/').pop()+':'+line))}</a>`;}
+// source location as plain text (file:line), easy to copy into the IDE
+function link(file,abs,line,text){if(!file)return'';
+ return `<span class="lnk" title="${esc(file)}:${line}">${wb(text||(file.split('/').pop()+':'+line))}</span>`;}
 function ic(n){const k=KIND[n.kind]||['?',''];return `<span class="ic k-${n.kind}" title="${k[1]}">${k[0]}</span>`;}
 function sub(n){if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;
  if(n.kind==='event'){const e=(IN.get(n.id)||[]).filter(x=>x.k==='emits').length,h=(OUT.get(n.id)||[]).length;
@@ -1013,7 +1007,7 @@ let dir='fwd',maxDepth=8;
 function select(id){selected=id;const n=N.get(id);renderList();
  if(view==='graph'){drawGraph(null,true);return;}
  const roles=(n.roles||[]).filter(r=>r!==n.kind).map(r=>`<span class="badge k-${r}">${r}</span>`).join(' ');
- $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${esc(n.label)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${roles}</div>
+ $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${roles}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
  <div class="toolbar"><button class="btn" data-d="fwd">Trace forward ▶</button><button class="btn" data-d="bwd">◀ Trace back</button>
  <span class="sub">depth</span><select id="depth">${[2,3,4,6,8,12,20].map(d=>`<option ${d===maxDepth?'selected':''}>${d}</option>`).join('')}</select>
@@ -1039,7 +1033,7 @@ function drawTree(){document.querySelectorAll('[data-d]').forEach(b=>b.classList
  const t=$('#tree');t.innerHTML='';fill(t,selected,0,new Set([selected]));if(!t.children.length)t.innerHTML='<li class="sub">Nothing found in this direction.</li>';}
 function fill(ul,id,depth,path){for(const e of nextOf(id,dir)){const n=N.get(e.id);if(!n)continue;const li=document.createElement('li');
  const lab=(dir==='fwd'?FWD:BWD)[e.k]+(e.via?' (via calls)':'');
- const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm" data-id="${esc(n.id)}">${esc(n.label)}</span>${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
+ const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span>${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
  const kids=nextOf(e.id,dir);
  if(path.has(e.id)){li.className='leaf';li.innerHTML=row+' <span class="cyc">↻ cycle</span>';}
  else if(!kids.length){li.className='leaf';li.innerHTML=row;}
@@ -1052,7 +1046,7 @@ const ABS=new Map(DATA.nodes.filter(n=>n.file).map(n=>[n.file,n.abs]));function 
 function expandAll(root,budget){let opened=0;const step=()=>{const closed=[...root.querySelectorAll('details:not([open])')];if(!closed.length||opened>1500)return;
  closed.forEach(d=>{d.open=true;opened++;});setTimeout(step,0);};step();}
 $('#detail').addEventListener('click',e=>{const x=e.target.closest('.nm');if(x){e.preventDefault();go(x.dataset.id);}});
-function drawDirect(n){const rows=(list,lbl)=>list.map(e=>{const m=N.get(e.id);return m?`<tr><td>${esc(lbl[e.k])}${asTag(e)}</td><td>${ic(m)} <span class="nm" data-id="${esc(m.id)}">${esc(m.label)}</span></td><td>${link(e.f,absOf(e.f),e.l)}</td></tr>`:''}).join('');
+function drawDirect(n){const rows=(list,lbl)=>list.map(e=>{const m=N.get(e.id);return m?`<tr><td>${esc(lbl[e.k])}${asTag(e)}</td><td><span class="row">${ic(m)}<span class="nm" data-id="${esc(m.id)}">${nameHtml(m)}</span></span></td><td>${link(e.f,absOf(e.f),e.l)}</td></tr>`:''}).join('');
  const o=OUT.get(n.id)||[],i=IN.get(n.id)||[];
  $('#direct').innerHTML=`<h3>Direct links</h3><table><tr><th>Relation</th><th>Item</th><th>Where</th></tr>${rows(i,BWD)}${rows(o,FWD)||''}${!o.length&&!i.length?'<tr><td colspan=3 class="sub">none</td></tr>':''}</table>`;}
 function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][1]}: ${n.label}${n.path?' ['+(n.verb||'')+' '+n.path+']':''}  (${n.file||''}:${n.line||''})`);
@@ -1101,7 +1095,7 @@ function wrap(s,c,w,max){if(tw(s,c)<=w)return [s];const out=[];let cur='';
  if(out.length>max){const rest=out.slice(max-1).join('');out.length=max-1;out.push(rest);}
  return out.map(l=>ell(l,c,w));}
 // "Owner.member(...)" -> ["Owner", "member(...)"]; a quoted event value stays whole
-function splitName(n){const L=n.label||'';if(L.startsWith('"'))return [null,L];
+function splitName(n){const L=n.label||'';if(L.startsWith('"')||n.kind==='lambda')return [null,L];
  const p=L.indexOf('('),head=p<0?L:L.slice(0,p),cut=Math.max(head.lastIndexOf('.'),head.lastIndexOf('#'),head.lastIndexOf('::'));
  if(cut<=0)return [null,L];const sep=head.startsWith('::',cut)?2:1;return [L.slice(0,cut),L.slice(cut+sep)];}
 function gSpec(n){const [own,mem]=splitName(n),al=aliasesOf(n),L=[];
@@ -1150,13 +1144,13 @@ function edgePath(a,b){const ax=a.x+a.w/2,bx=b.x-b.w/2;
  const ax2=a.x-a.w/2,bx2=b.x+b.w/2;
  if(ax2>bx2+10){const m=(ax2+bx2)/2;return `M${ax2},${a.y}C${m},${a.y} ${m},${b.y} ${bx2},${b.y}`;}
  const y=Math.max(a.y+a.h/2,b.y+b.h/2)+28;return `M${a.x},${a.y+a.h/2}C${a.x},${y} ${b.x},${y} ${b.x},${b.y+b.h/2}`;}
-function gShell(){const n=N.get(G.center),hasLinks=!!DATA.meta.link_template;
+function gShell(){const n=N.get(G.center);
  const shapes=ORDER.map(k=>`<span><svg width="28" height="14"><path class="s-${k}" d="${shapeD(k,28,14)}" style="fill:var(--panel);stroke-width:1.4"/>${k==='class'?`<path class="s-class" transform="translate(2,2)" d="${shapeD(k,24,10)}" style="fill:none;stroke-width:1"/>`:''}</svg>${KIND[k][1]}</span>`).join('');
  $('#detail').innerHTML=`<div id="ghead"></div>
  <div class="toolbar"><button class="btn" id="gExpB" title="Open the incoming links of every node shown">◀ Expand all</button><button class="btn" id="gExpF" title="Open the outgoing links of every node shown">Expand all ▶</button>
  <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button><button class="btn" id="gTree">Open as tree</button>
  <label class="sub"><input type="checkbox" id="hideCalls" ${G.hide?'checked':''}> events only</label></div>
- <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · double-click to center on it${hasLinks?' · Ctrl+click opens its source':''} · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
+ <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
  <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
   `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
  <div class="glegend">${shapes}</div>
@@ -1185,8 +1179,6 @@ function gShell(){const n=N.get(G.center),hasLinks=!!DATA.meta.link_template;
   const m=e.target.closest('.gmore');
   if(m){const p=G.pos.get(m.dataset.key).more;G.lim.set(p.key,(G.lim.get(p.key)||GLIM)+GLIM);drawGraph(p.owner);return;}
   const g=e.target.closest('.gn');if(!g){gFocus(null);return;}const id=g.dataset.id;
-  if(e.ctrlKey||e.metaKey){const n=N.get(id);if(n.file&&DATA.meta.link_template)window.open(hrefOf(n.file,n.abs,n.line));return;}
-  if(e.detail>1){if(id!==G.center)go(id);return;}
   gFocus(G.focus===id?null:id);});}
 function gToggle(id,d){const key=id+'|'+d;
  if(G.open.has(key)){G.open.delete(key);
@@ -1240,7 +1232,12 @@ function gInfo(){const box=$('#ghead');if(!box)return;const n=N.get(G.focus||G.c
  box.innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}${al.length?` · <span class="alias" title="${esc(al.map(a=>a.name+' = '+a.to+(a.missing?' (target not found)':'')).join(' · '))}">≡ ${esc(al.map(a=>short(a.name)).join(', '))}</span>`:''}</div>`;}
 // "ClassName.member" on two lines: the owner small and grey above, the member below
-function nameHtml(n){const [own,mem]=splitName(n);return (own?`<span class="own">${esc(own)}</span>`:'')+esc(mem);}
+function nameHtml(n){const [own,mem]=splitName(n);return twoLines(own,mem);}
+// <wbr> at dots and camelCase humps lets long names wrap cleanly
+const wb=s=>segs(String(s)).map(esc).join('<wbr>');
+function twoLines(own,mem){return (own?`<span class="own">${wb(own)}</span>`:'')+wb(mem);}
+// same rule for a plain "Class.NAME" string (constant names)
+function nameStr(t){const s=String(t??'');if(s.startsWith('"'))return esc(s);const c=s.lastIndexOf('.');return c>0?twoLines(s.slice(0,c),s.slice(c+1)):esc(s);}
 document.addEventListener('keydown',e=>{if(view!=='graph'||!$('#gsvg')||/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))return;
  if(e.key==='Escape')gFocus(null);else if(e.key==='f'||e.key==='F'){gFit();gApply();}});
 function gFit(){const svg=$('#gsvg'),W=svg.clientWidth||800,H=svg.clientHeight||500;let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
@@ -1251,7 +1248,7 @@ $('#tIssues').onclick=()=>{setView('issues');drawIssues();};
 function drawIssues(){const ev=DATA.nodes.filter(n=>n.kind==='event');
  const noL=ev.filter(n=>!(OUT.get(n.id)||[]).length),noE=ev.filter(n=>!(IN.get(n.id)||[]).some(e=>e.k==='emits'));
  const deadEp=DATA.nodes.filter(n=>n.kind==='endpoint'&&!(OUT.get(n.id)||[]).length);
- const lst=a=>a.length?`<table>${a.map(n=>`<tr><td>${ic(n)} <span class="nm" data-id="${esc(n.id)}">${esc(n.label)}</span></td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`).join('')}</table>`:'<div class="sub">none 🎉</div>';
+ const lst=a=>a.length?`<table>${a.map(n=>`<tr><td><span class="row">${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span></span></td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`).join('')}</table>`:'<div class="sub">none 🎉</div>';
  $('#detail').innerHTML=`<div class="title"><h2>Issues & blind spots</h2></div>
  <div class="section"><h3>Events emitted but never listened to (${noL.length})</h3>${lst(noL)}</div>
  <div class="section"><h3>Events listened to but never emitted (${noE.length})</h3><div class="help">Often emitted with a dynamic name — check "unresolved" below.</div>${lst(noE)}</div>
