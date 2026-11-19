@@ -881,14 +881,20 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .help{color:var(--mute);font-size:12px;margin-top:4px}
 #gwrap{position:relative;border:1px solid var(--line);border-radius:10px;background:var(--bg);height:calc(100vh - 230px);min-height:420px;overflow:hidden;margin-top:8px}
 #gsvg{width:100%;height:100%;display:block;cursor:grab;user-select:none;touch-action:none}#gsvg.pan{cursor:grabbing}
-.gn{cursor:pointer}.gn .box{fill:var(--panel);stroke-width:1.5}.gn:hover .box{fill:var(--hi)}.gn.ctr .box{stroke-width:3;fill:var(--hi)}
-.gn text{fill:var(--ink);font-size:12px}.gn text.gs{fill:var(--mute);font-size:10.5px}.gn text.ki{font-size:14px;font-weight:700}
+.gn{cursor:pointer}.gn .box{fill:var(--panel);stroke-width:1.6}.gn .box2{fill:none;stroke-width:1;opacity:.6}.gn:hover .box{fill:var(--hi)}
+.gn.ctr .box{stroke-width:3.2;fill:var(--hi)}.gn.foc .box{fill:var(--hi);filter:drop-shadow(0 0 5px var(--acc))}
+.gn text{fill:var(--ink);font-size:12px}.gn text.gp{fill:var(--mute);font-size:10px}.gn text.gm{font-weight:600;font-size:12.5px}.gn text.gs{fill:var(--mute);font-size:10.5px}.gn text.ki{font-size:14px;font-weight:700}
 .s-endpoint{stroke:var(--ep)}.s-event{stroke:var(--ev)}.s-handler{stroke:var(--hd)}.s-method{stroke:var(--me)}.s-lambda{stroke:var(--la)}.s-class{stroke:var(--cl)}
 .gn text.f-endpoint{fill:var(--ep)}.gn text.f-event{fill:var(--ev)}.gn text.f-handler{fill:var(--hd)}.gn text.f-method{fill:var(--me)}.gn text.f-lambda{fill:var(--la)}.gn text.f-class{fill:var(--cl)}
-.gb rect{fill:var(--bg);stroke:var(--mute)}.gn .gb text{font-size:11px;font-weight:700;text-anchor:middle}.gn:hover .gb rect{stroke:var(--acc)}
-.ge{fill:none;stroke-width:1.5;opacity:.8}.ge.emits{stroke:var(--ev)}.ge.handled_by{stroke:var(--hd)}.ge.calls{stroke:var(--me);stroke-dasharray:5 3}.ge.via{stroke-dasharray:1.5 3}.ge.more{stroke:var(--line);stroke-dasharray:3 3}
+.gb{cursor:pointer}.gb rect{fill:var(--bg);stroke:var(--mute)}.gn .gb text{font-size:10.5px;font-weight:700;text-anchor:middle}.gb:hover rect{stroke:var(--acc);fill:var(--hi)}
+.gb.on rect{fill:var(--acc);stroke:var(--acc)}.gn .gb.on text{fill:#fff}
+.ge{fill:none;stroke-width:1.5;opacity:.8;transition:opacity .15s}.ge:hover{stroke-width:3}.ge.emits{stroke:var(--ev)}.ge.handled_by{stroke:var(--hd)}.ge.calls{stroke:var(--me);stroke-dasharray:5 3}.ge.via{stroke-dasharray:1.5 3}.ge.more{stroke:var(--line);stroke-dasharray:3 3}
+.gn,.gmore{transition:opacity .15s}#gvp.dim .gn:not(.hl),#gvp.dim .gmore{opacity:.28}#gvp.dim .ge:not(.hl){opacity:.08}#gvp.dim .ge.hl{stroke-width:2.6;opacity:1}
 .gmore{cursor:pointer}.gmore rect{fill:var(--panel);stroke:var(--mute);stroke-dasharray:3 3}.gmore text{fill:var(--mute);font-size:12px;text-anchor:middle}.gmore:hover rect{stroke:var(--acc)}
-.glegend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}
+#ginfo{position:absolute;top:10px;left:10px;max-width:min(340px,calc(100% - 20px));background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.15);font-size:13px;display:none}
+#ginfo.on{display:block}#ginfo .gi-name{font-weight:600;word-break:break-all;margin:4px 0}#ginfo .gi-btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+#ginfo .x{position:absolute;top:4px;right:9px;cursor:pointer;color:var(--mute)}#ginfo .btn:disabled{opacity:.4;cursor:default}
+.glegend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
 @media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}}
 </style></head><body>
 <header><h1>💎 Sapphire event map</h1><span class="meta" id="meta"></span></header>
@@ -998,18 +1004,38 @@ function setView(v){view=v;['Browse','Graph','Issues'].forEach(x=>$('#t'+x).clas
 $('#tBrowse').onclick=()=>{setView('browse');selected?select(selected):null;};
 $('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
  else $('#detail').innerHTML='<div class="empty">Pick an item on the left to center the graph on it.</div>';};
-// graph: centered on the selected item, incoming links on the left, outgoing on the right
-const G={center:null,open:new Set(),lim:new Map(),pos:new Map(),t:{x:0,y:0,k:1},hide:false,auto:true};
-const GW=210,GH=42,GX=290,GY=58,GLIM=25;
+// graph: centered on the selected item, incoming links on the left, outgoing on the right.
+// Each node has two badges: ◂ (top left) opens its incoming links, ▸ (top right) its outgoing ones.
+const G={center:null,open:new Set(),lim:new Map(),pos:new Map(),t:{x:0,y:0,k:1},hide:false,auto:true,focus:null,dragged:false};
+const GW=224,GH=50,GX=300,GY=68,GLIM=25;
 const trunc=(s,n)=>{s=String(s??'');return s.length>n?s.slice(0,n-1)+'…':s;};
+const ltrunc=(s,n)=>{s=String(s??'');return s.length>n?'…'+s.slice(-(n-1)):s;};
+const isOpen=(id,d)=>G.open.has(id+'|'+d);
+const keyId=k=>k.slice(0,k.lastIndexOf('|'));
 function uniqNext(id,d){const seen=new Set(),r=[];
  for(const e of nextOf(id,d)){if(e.id===id||seen.has(e.id)||!N.has(e.id))continue;seen.add(e.id);r.push(e);}return r;}
-function neighbours(id){const s=new Set();for(const d of ['fwd','bwd'])for(const e of uniqNext(id,d))s.add(e.id);return s;}
-// Breadth-first from the center through expanded nodes. Each node keeps the column where it was
-// first reached (outgoing = +1, incoming = -1) and its discovery order sets its row.
+// one outline per kind: endpoint = hexagon, event = parallelogram, handler = pill,
+// lambda = cut corners, method = square corners, class = rounded with a double border
+function shapeD(kind,w,h){const r=h/2,s=Math.round(h*.25),c=Math.round(h*.2),q=Math.round(h*.14);switch(kind){
+ case 'endpoint':return `M${s},0H${w-s}L${w},${r}L${w-s},${h}H${s}L0,${r}Z`;
+ case 'event':return `M${s},0H${w}L${w-s},${h}H0Z`;
+ case 'handler':return `M${r},0H${w-r}A${r},${r} 0 0 1 ${w-r},${h}H${r}A${r},${r} 0 0 1 ${r},0Z`;
+ case 'lambda':return `M${c},0H${w-c}L${w},${c}V${h-c}L${w-c},${h}H${c}L0,${h-c}V${c}Z`;
+ case 'class':return `M0,${q}Q0,0 ${q},0H${w-q}Q${w},0 ${w},${q}V${h-q}Q${w},${h} ${w-q},${h}H${q}Q0,${h} 0,${h-q}Z`;
+ default:return `M0,0H${w}V${h}H0Z`;}}
+const PAD={endpoint:15,event:15,handler:17,lambda:12,method:10,class:11};
+// "Owner.member(...)" -> ["Owner", "member(...)"]; events keep their dotted name whole
+function splitName(n){const L=n.label||'';if(n.kind==='event')return [null,L];
+ const p=L.indexOf('('),head=p<0?L:L.slice(0,p),cut=Math.max(head.lastIndexOf('.'),head.lastIndexOf('#'),head.lastIndexOf('::'));
+ if(cut<=0)return [null,L];const sep=head.startsWith('::',cut)?2:1;return [L.slice(0,cut),L.slice(cut+sep)];}
+function gLines(n){const [own,mem]=splitName(n),lines=[];
+ const extra=n.kind==='endpoint'&&n.path?(n.verb||'')+' '+n.path:n.kind==='event'?sub(n):(own?'':n.cls||'');
+ if(own)lines.push(['gp',own,'l']);lines.push(['gm',mem,'r']);if(extra)lines.push(['gs',extra,'r']);return lines;}
+// Breadth-first from the center through the opened directions. Each node keeps the column where it
+// was first reached (outgoing = +1, incoming = -1) and its discovery order sets its row.
 function gLayout(){const c=G.center,col=new Map([[c,0]]),seq=new Map([[c,0]]),q=[c],more=[];let n=1;
- while(q.length){const id=q.shift();if(!G.open.has(id))continue;
-  for(const [d,s] of [['bwd',-1],['fwd',1]]){const list=uniqNext(id,d),key=id+'|'+d,lim=G.lim.get(key)||GLIM;
+ while(q.length){const id=q.shift();
+  for(const [d,s] of [['bwd',-1],['fwd',1]]){if(!isOpen(id,d))continue;const list=uniqNext(id,d),key=id+'|'+d,lim=G.lim.get(key)||GLIM;
    for(const e of list.slice(0,lim))if(!col.has(e.id)){col.set(e.id,col.get(id)+s);seq.set(e.id,n++);q.push(e.id);}
    if(list.length>lim)more.push({key,owner:id,d,n:list.length-lim,col:col.get(id)+s,seq:n++});}}
  const cols=new Map(),add=o=>(cols.get(o.col)||cols.set(o.col,[]).get(o.col)).push(o);
@@ -1022,71 +1048,101 @@ function edgePath(a,b){const ax=a.x+GW/2,bx=b.x-GW/2;
  if(bx>ax+10){const m=(ax+bx)/2;return `M${ax},${a.y}C${m},${a.y} ${m},${b.y} ${bx},${b.y}`;}
  if(ax>bx+GW+10){const ax2=a.x-GW/2,bx2=b.x+GW/2,m=(ax2+bx2)/2;return `M${ax2},${a.y}C${m},${a.y} ${m},${b.y} ${bx2},${b.y}`;}
  const y=Math.max(a.y,b.y)+GH/2+28;return `M${a.x},${a.y+GH/2}C${a.x},${y} ${b.x},${y} ${b.x},${b.y+GH/2}`;}
-function gSub(n){return n.kind==='endpoint'&&n.path?(n.verb||'')+' '+n.path:(n.cls||KIND[n.kind][1]);}
 function gShell(){const n=N.get(G.center),hasLinks=!!DATA.meta.link_template;
+ const shapes=ORDER.map(k=>`<span><svg width="28" height="14"><path class="s-${k}" d="${shapeD(k,28,14)}" style="fill:var(--panel);stroke-width:1.4"/>${k==='class'?`<path class="s-class" transform="translate(2,2)" d="${shapeD(k,24,10)}" style="fill:none;stroke-width:1"/>`:''}</svg>${KIND[k][1]}</span>`).join('');
  $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${esc(n.label)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span></div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}</div>
- <div class="toolbar"><button class="btn" id="gExpand">Expand one level</button><button class="btn" id="gCollapse">Collapse all</button>
- <button class="btn" id="gFit">Fit</button><button class="btn" id="gTree">Open as tree</button>
+ <div class="toolbar"><button class="btn" id="gExpB" title="Open the incoming links of every node shown">◀ Expand all</button><button class="btn" id="gExpF" title="Open the outgoing links of every node shown">Expand all ▶</button>
+ <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button><button class="btn" id="gTree">Open as tree</button>
  <label class="sub"><input type="checkbox" id="hideCalls" ${G.hide?'checked':''}> events only</label></div>
- <div class="help">Click a node to expand or collapse its links · double-click to center on it${hasLinks?' · Ctrl+click to open its source':''} · drag to pan, scroll to zoom</div>
+ <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node for details · double-click to center on it${hasLinks?' · Ctrl+click opens its source':''} · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
  <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
-  `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
+  `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg><div id="ginfo"></div></div>
+ <div class="glegend">${shapes}</div>
  <div class="glegend"><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
  <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span><span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div>`;
- $('#gExpand').onclick=()=>{for(const id of G.pos.keys())if(N.has(id)&&neighbours(id).size)G.open.add(id);drawGraph(null,true);};
- $('#gCollapse').onclick=()=>{G.open=new Set([G.center]);G.lim=new Map();drawGraph(null,true);};
+ const expandAll=d=>{for(const id of G.pos.keys())if(N.has(id)&&uniqNext(id,d).length)G.open.add(id+'|'+d);drawGraph(null,true);};
+ $('#gExpB').onclick=()=>expandAll('bwd');$('#gExpF').onclick=()=>expandAll('fwd');
+ $('#gCollapse').onclick=()=>{G.open=new Set([G.center+'|bwd',G.center+'|fwd']);G.lim=new Map();drawGraph(null,true);};
  $('#gFit').onclick=()=>{gFit();gApply();};
  $('#gTree').onclick=()=>{setView('browse');select(G.center);};
  $('#hideCalls').onchange=e=>{G.hide=e.target.checked;drawGraph(null,true);};
- const svg=$('#gsvg');let drag=null,clickT=null;
+ const svg=$('#gsvg');let drag=null;
  svg.addEventListener('wheel',e=>{e.preventDefault();const r=svg.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
   const k=Math.min(3,Math.max(0.12,G.t.k*Math.exp(-e.deltaY*0.0015)));
   G.t.x=mx-(mx-G.t.x)*k/G.t.k;G.t.y=my-(my-G.t.y)*k/G.t.k;G.t.k=k;G.auto=false;gApply();},{passive:false});
  // refit when the panel gets its final size, until the user pans or zooms
  new ResizeObserver(()=>{if(G.auto&&$('#gsvg')===svg){gFit();gApply();}}).observe(svg);
  svg.addEventListener('pointerdown',e=>{if(e.target.closest('.gn,.gmore'))return;
-  drag={x:e.clientX,y:e.clientY,tx:G.t.x,ty:G.t.y};G.auto=false;svg.classList.add('pan');svg.setPointerCapture(e.pointerId);});
- svg.addEventListener('pointermove',e=>{if(!drag)return;G.t.x=drag.tx+e.clientX-drag.x;G.t.y=drag.ty+e.clientY-drag.y;gApply();});
- const endDrag=()=>{drag=null;svg.classList.remove('pan');};svg.addEventListener('pointerup',endDrag);svg.addEventListener('pointercancel',endDrag);
- svg.addEventListener('click',e=>{const m=e.target.closest('.gmore');
+  drag={x:e.clientX,y:e.clientY,tx:G.t.x,ty:G.t.y,moved:false};svg.classList.add('pan');svg.setPointerCapture(e.pointerId);});
+ svg.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
+  if(Math.abs(dx)+Math.abs(dy)>4){drag.moved=true;G.auto=false;}G.t.x=drag.tx+dx;G.t.y=drag.ty+dy;gApply();});
+ const endDrag=()=>{if(drag&&drag.moved){G.dragged=true;setTimeout(()=>G.dragged=false);}drag=null;svg.classList.remove('pan');};
+ svg.addEventListener('pointerup',endDrag);svg.addEventListener('pointercancel',endDrag);
+ svg.addEventListener('click',e=>{if(G.dragged)return;
+  const b=e.target.closest('.gb');if(b){gToggle(b.closest('.gn').dataset.id,b.dataset.d);return;}
+  const m=e.target.closest('.gmore');
   if(m){const p=G.pos.get(m.dataset.key).more;G.lim.set(p.key,(G.lim.get(p.key)||GLIM)+GLIM);drawGraph(p.owner);return;}
-  const g=e.target.closest('.gn');if(!g)return;const id=g.dataset.id;
+  const g=e.target.closest('.gn');if(!g){gFocus(null);return;}const id=g.dataset.id;
   if(e.ctrlKey||e.metaKey){const n=N.get(id);if(n.file&&DATA.meta.link_template)window.open(hrefOf(n.file,n.abs,n.line));return;}
-  clearTimeout(clickT);
   if(e.detail>1){if(id!==G.center)go(id);return;}
-  clickT=setTimeout(()=>gToggle(id),230);});}
-function gToggle(id){
- if(G.open.has(id)){G.open.delete(id);
-  // forget expansions that are no longer reachable from the center
-  const vis=gLayout();for(const o of [...G.open])if(!vis.has(o))G.open.delete(o);}
- else if(neighbours(id).size)G.open.add(id);else return;
+  gFocus(G.focus===id?null:id);});}
+function gToggle(id,d){const key=id+'|'+d;
+ if(G.open.has(key)){G.open.delete(key);
+  // forget opened directions that are no longer reachable from the center
+  const vis=gLayout();for(const k of [...G.open])if(!vis.has(keyId(k)))G.open.delete(k);}
+ else if(uniqNext(id,d).length)G.open.add(key);else return;
  drawGraph(id);}
+function gBadge(id,d,pos){const all=uniqNext(id,d);if(!all.length)return'';
+ const on=isOpen(id,d),hidden=all.filter(e=>!pos.has(e.id)).length;if(!on&&!hidden)return'';
+ const t=on?(d==='bwd'?'◂ −':'− ▸'):(d==='bwd'?'◂ '+hidden:hidden+' ▸'),bw=Math.max(28,12+t.length*6.5);
+ return `<g class="gb${on?' on':''}" data-d="${d}" transform="translate(${d==='bwd'?0:GW},0)"><title>${on?'Hide':'Show'} ${d==='bwd'?'incoming':'outgoing'} links (${all.length}${hidden?', '+hidden+' not shown':''})</title><rect x="${-bw/2}" y="-9" width="${bw}" height="18" rx="9"/><text y="4">${t}</text></g>`;}
 function drawGraph(anchor,fit){
- if(G.center!==selected){G.center=selected;G.open=new Set([selected]);G.lim=new Map();G.pos=new Map();fit=true;}
+ if(G.center!==selected){G.center=selected;G.open=new Set([selected+'|bwd',selected+'|fwd']);G.lim=new Map();G.pos=new Map();G.focus=null;fit=true;}
  if(!$('#gsvg')||$('#gsvg').dataset.c!==G.center){gShell();fit=true;}
- const old=anchor&&G.pos.get(anchor),pos=gLayout();G.pos=pos;
+ const old=anchor&&G.pos.get(anchor),pos=gLayout();G.pos=pos;if(G.focus&&!pos.has(G.focus))G.focus=null;
  const edges=[],seen=new Set();
- for(const [id,p] of pos){if(p.more){edges.push(`<path class="ge more" d="${edgePath(p.more.d==='fwd'?pos.get(p.more.owner):p,p.more.d==='fwd'?p:pos.get(p.more.owner))}"/>`);continue;}
+ for(const [id,p] of pos){if(p.more){const o=pos.get(p.more.owner);edges.push(`<path class="ge more" d="${p.more.d==='fwd'?edgePath(o,p):edgePath(p,o)}"/>`);continue;}
   for(const e of uniqNext(id,'fwd')){if(!pos.has(e.id)||seen.has(id+'>'+e.id))continue;seen.add(id+'>'+e.id);
    const a=N.get(id),b=N.get(e.id),k=FWD[e.k]?e.k:'calls';
-   edges.push(`<path class="ge ${k}${e.via?' via':''}" d="${edgePath(p,pos.get(e.id))}" marker-end="url(#ar-${k})"><title>${esc(a.label+' '+(FWD[e.k]||e.k)+' '+b.label+(e.f?' — '+e.f+':'+e.l:''))}</title></path>`);}}
+   edges.push(`<path class="ge ${k}${e.via?' via':''}" data-s="${esc(id)}" data-d="${esc(e.id)}" d="${edgePath(p,pos.get(e.id))}" marker-end="url(#ar-${k})"><title>${esc(a.label+' '+(FWD[e.k]||e.k)+' '+b.label+(e.f?' — '+e.f+':'+e.l:''))}</title></path>`);}}
  const nodes=[];
  for(const [id,p] of pos){
-  if(p.more){nodes.push(`<g class="gmore" data-key="${esc(id)}" transform="translate(${p.x-GW/2},${p.y-GH/2})"><rect width="${GW}" height="${GH}" rx="8"/><text x="${GW/2}" y="${GH/2+4}">+${p.more.n} more…</text></g>`);continue;}
-  const n=N.get(id),nb=neighbours(id),hidden=[...nb].filter(x=>!pos.has(x)).length,open=G.open.has(id);
-  let badge='';if(nb.size){const t=open&&!hidden?'−':'+'+(hidden||''),bw=Math.max(20,8+t.length*7);
-   badge=`<g class="gb" transform="translate(${GW},${GH/2})"><rect x="${-bw/2}" y="-9" width="${bw}" height="18" rx="9"/><text y="4">${t}</text></g>`;}
-  const tip=`${KIND[n.kind][1]}: ${n.label}${n.path?'\n'+(n.verb||'')+' '+n.path:''}${n.cls?'\n'+n.cls:''}${n.file?'\n'+n.file+':'+n.line:''}\n${nb.size} link(s)${hidden?', '+hidden+' hidden':''}`;
+  if(p.more){nodes.push(`<g class="gmore" data-key="${esc(id)}" transform="translate(${p.x-GW/2},${p.y-GH/2})"><title>Show ${Math.min(GLIM,p.more.n)} more</title><rect width="${GW}" height="${GH}" rx="8"/><text x="${GW/2}" y="${GH/2+4}">+${p.more.n} more…</text></g>`);continue;}
+  const n=N.get(id),pad=PAD[n.kind]||10,tx=pad+20,chars=Math.floor((GW-tx-pad+4)/6.6),lines=gLines(n),y0=GH/2-(lines.length-1)*7+4;
+  const txt=lines.map(([c,s,side],i)=>`<text class="${c}" x="${tx}" y="${y0+i*14}">${esc(side==='l'?ltrunc(s,chars+3):trunc(s,c==='gs'?chars+3:chars))}</text>`).join('');
+  const nin=uniqNext(id,'bwd').length,nout=uniqNext(id,'fwd').length;
+  const tip=`${KIND[n.kind][1]}: ${n.label}${n.path?'\n'+(n.verb||'')+' '+n.path:''}${n.cls?'\n'+n.cls:''}${n.file?'\n'+n.file+':'+n.line:''}\n${nin} incoming · ${nout} outgoing`;
   nodes.push(`<g class="gn${id===G.center?' ctr':''}" data-id="${esc(id)}" transform="translate(${p.x-GW/2},${p.y-GH/2})"><title>${esc(tip)}</title>
-   <rect class="box s-${n.kind}" width="${GW}" height="${GH}" rx="8"/><text class="ki f-${n.kind}" x="9" y="27">${KIND[n.kind][0]}</text>
-   <text x="31" y="18">${esc(trunc(n.label,26))}</text><text class="gs" x="31" y="33">${esc(trunc(gSub(n),31))}</text>${badge}</g>`);}
+   <path class="box s-${n.kind}" d="${shapeD(n.kind,GW,GH)}"/>${n.kind==='class'?`<path class="box2 s-class" transform="translate(3,3)" d="${shapeD('class',GW-6,GH-6)}"/>`:''}
+   <text class="ki f-${n.kind}" x="${pad}" y="${GH/2+5}">${KIND[n.kind][0]}</text>${txt}${gBadge(id,'bwd',pos)}${gBadge(id,'fwd',pos)}</g>`);}
  $('#gvp').innerHTML=edges.join('')+nodes.join('');
  if(fit)gFit();
  else if(old&&pos.get(anchor)){G.auto=false;const p=pos.get(anchor);G.t.x-=(p.x-old.x)*G.t.k;G.t.y-=(p.y-old.y)*G.t.k;}
- gApply();}
+ gApply();gHighlight();gInfo();}
+// focus: a clicked node lights up with its direct links, and a details card opens
+function gFocus(id){G.focus=id;gHighlight();gInfo();}
+function gHighlight(){const vp=$('#gvp');if(!vp)return;vp.querySelectorAll('.hl,.foc').forEach(e=>e.classList.remove('hl','foc'));
+ vp.classList.toggle('dim',!!G.focus);if(!G.focus)return;const f=G.focus,mark=id=>{const g=vp.querySelector(`.gn[data-id="${CSS.escape(id)}"]`);if(g)g.classList.add('hl');return g;};
+ vp.querySelectorAll('.ge[data-s]').forEach(e=>{if(e.dataset.s===f||e.dataset.d===f){e.classList.add('hl');mark(e.dataset.s===f?e.dataset.d:e.dataset.s);}});
+ const g=mark(f);if(g)g.classList.add('foc');}
+function gInfo(){const box=$('#ginfo');if(!box)return;if(!G.focus){box.classList.remove('on');return;}
+ const n=N.get(G.focus),i=uniqNext(n.id,'bwd').length,o=uniqNext(n.id,'fwd').length;
+ box.innerHTML=`<span class="x" id="giX" title="Close (Esc)">✕</span><div>${ic(n)} <span class="badge k-${n.kind}">${KIND[n.kind][1]}</span></div>
+ <div class="gi-name">${esc(n.label)}</div>${n.path?`<div><code>${esc((n.verb||'')+' '+n.path)}</code></div>`:''}
+ ${n.cls?`<div class="sub">${esc(n.cls)}</div>`:''}${n.file?`<div>${link(n.file,n.abs,n.line,n.file+':'+n.line)}</div>`:''}
+ <div class="gi-btns"><button class="btn${isOpen(n.id,'bwd')?' on':''}" data-gd="bwd" ${i?'':'disabled'}>◀ ${i} incoming</button>
+ <button class="btn${isOpen(n.id,'fwd')?' on':''}" data-gd="fwd" ${o?'':'disabled'}>${o} outgoing ▶</button>
+ ${n.id!==G.center?'<button class="btn" id="giC">Center here</button>':''}<button class="btn" id="giT">Open as tree</button></div>`;
+ box.classList.add('on');
+ $('#giX').onclick=()=>gFocus(null);
+ box.querySelectorAll('[data-gd]').forEach(b=>b.onclick=()=>gToggle(n.id,b.dataset.gd));
+ if($('#giC'))$('#giC').onclick=()=>go(n.id);
+ $('#giT').onclick=()=>{setView('browse');n.id===selected?select(n.id):go(n.id);};}
+document.addEventListener('keydown',e=>{if(view!=='graph'||!$('#gsvg')||/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))return;
+ if(e.key==='Escape')gFocus(null);else if(e.key==='f'||e.key==='F'){gFit();gApply();}});
 function gFit(){const svg=$('#gsvg'),W=svg.clientWidth||800,H=svg.clientHeight||500;let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
- for(const p of G.pos.values()){x0=Math.min(x0,p.x-GW/2);x1=Math.max(x1,p.x+GW/2+14);y0=Math.min(y0,p.y-GH/2);y1=Math.max(y1,p.y+GH/2+30);}
+ for(const p of G.pos.values()){x0=Math.min(x0,p.x-GW/2-16);x1=Math.max(x1,p.x+GW/2+16);y0=Math.min(y0,p.y-GH/2-12);y1=Math.max(y1,p.y+GH/2+30);}
  const k=Math.min(1.1,W/(x1-x0+60),H/(y1-y0+60));G.auto=true;G.t={k,x:W/2-(x0+x1)/2*k,y:H/2-(y0+y1)/2*k};}
 function gApply(){$('#gvp').setAttribute('transform',`translate(${G.t.x},${G.t.y}) scale(${G.t.k})`);}
 $('#tIssues').onclick=()=>{setView('issues');drawIssues();};
