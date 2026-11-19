@@ -922,7 +922,8 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .help{color:var(--mute);font-size:12px;margin-top:4px}
 .alias{font-size:11px;color:var(--ev);border:1px dashed var(--ev);border-radius:4px;padding:0 5px;white-space:nowrap}
 .gal{fill:var(--ev);font-size:10.5px;font-style:italic;text-anchor:middle;paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}#gvp.dim .gal{opacity:.15}
-#gwrap{position:relative;border:1px solid var(--line);border-radius:10px;background:var(--bg);height:calc(100vh - 230px);min-height:420px;overflow:hidden;margin-top:8px}
+#detail.gview{display:flex;flex-direction:column}
+#gwrap{position:relative;border:1px solid var(--line);border-radius:10px;background:var(--bg);flex:1 1 0;min-height:300px;overflow:hidden;margin-top:8px}
 #gsvg{width:100%;height:100%;display:block;cursor:grab;user-select:none;touch-action:none}#gsvg.pan{cursor:grabbing}
 .gn{cursor:pointer}.gn .box{fill:var(--panel);stroke-width:1.6}.gn .box2{fill:none;stroke-width:1;opacity:.6}.gn:hover .box{fill:var(--hi)}
 .gn.ctr .box{stroke-width:3.2;fill:var(--hi)}.gn.foc .box{fill:var(--hi);filter:drop-shadow(0 0 5px var(--acc))}
@@ -936,8 +937,8 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .gmore{cursor:pointer}.gmore rect{fill:var(--panel);stroke:var(--mute);stroke-dasharray:3 3}.gmore text{fill:var(--mute);font-size:12px;text-anchor:middle}.gmore:hover rect{stroke:var(--acc)}
 #ghead .title .gsel{color:var(--acc)}#ghead .loc{min-height:18px}
 .own{display:block;font-size:11px;font-weight:400;color:var(--mute);word-break:break-all;line-height:1.3}h2 .own{font-size:12px}
-.glegend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
-@media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}}
+.glegend{display:flex;gap:6px 24px;flex-wrap:wrap;justify-content:space-between;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend>div{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.glegend span{white-space:nowrap}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
+@media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}#detail.gview{display:block}#gwrap{height:65vh}}
 </style></head><body>
 <header><h1>💎 Sapphire event map</h1><span class="meta" id="meta"></span></header>
 <main>
@@ -1055,7 +1056,7 @@ function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][
   if(!path.has(e.id))walk(e.id,depth+1,new Set([...path,e.id]));}};
  walk(id,0,new Set([id]));return lines.join('\n');}
 // issues
-function setView(v){view=v;['Browse','Graph','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
+function setView(v){view=v;$('#detail').classList.toggle('gview',v==='graph');['Browse','Graph','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
 $('#tBrowse').onclick=()=>{setView('browse');selected?select(selected):null;};
 $('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
  else $('#detail').innerHTML='<div class="empty">Pick an item on the left to center the graph on it.</div>';};
@@ -1153,9 +1154,8 @@ function gShell(){const n=N.get(G.center);
  <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
  <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
   `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
- <div class="glegend">${shapes}</div>
- <div class="glegend"><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
- <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span><span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div>`;
+ <div class="glegend"><div>${shapes}</div><div><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
+ <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span><span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div></div>`;
  const expandAll=d=>{for(const id of G.pos.keys())if(N.has(id)&&uniqNext(id,d).length)G.open.add(id+'|'+d);drawGraph(null,true);};
  $('#gExpB').onclick=()=>expandAll('bwd');$('#gExpF').onclick=()=>expandAll('fwd');
  $('#gCollapse').onclick=()=>{G.open=new Set([G.center+'|bwd',G.center+'|fwd']);G.lim=new Map();drawGraph(null,true);};
