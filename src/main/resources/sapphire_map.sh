@@ -567,7 +567,8 @@ function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, 
 # alias of another one (String A = Other.B;) is followed to the end of the chain.
 # Sets evAs to the name written in the code when an alias was followed, and evFound to 1
 # when a string value was reached.
-function normEv(r) { evAs = ""; evFound = 0; return evName(r, 0) }
+# evRaw keeps the reference itself when no string value was found (unknown constant, event class).
+function normEv(r) { evAs = ""; evFound = 0; evRaw = ""; return evName(r, 0) }
 function evName(r, dep,   ch, n, parts, k, key, m) {
   if (substr(r, 1, 2) == "S:") { evFound = 1; return substr(r, 3) }
   ch = substr(r, 3); sub(/\.class$/, "", ch)
@@ -577,6 +578,7 @@ function evName(r, dep,   ch, n, parts, k, key, m) {
     if (key in CONST) { evFound = 1; return CONST[key] }
     if ((key in ALIAS) && dep < 10) { if (dep == 0) evAs = ch; return evName("C:" ALIAS[key], dep + 1) }
   }
+  evRaw = ch
   return parts[n]
 }
 
@@ -675,7 +677,11 @@ function addClassNode(fq,   id) {
   }
   return id
 }
-function addEvent(nm,   id) { id = "event:" nm; addNode(id, "event", nm, "", "", ""); return id }
+function addEvent(nm,   id) {
+  id = "event:" nm; addNode(id, "event", nm, "", "", "")
+  if (!evFound && evRaw != "" && !(id in EVRAW)) EVRAW[id] = evRaw   # call right after normEv()
+  return id
+}
 function nodeForScope(sid) {
   if (substr(sid, 1, 6) == "class:") return addClassNode(substr(sid, 7))
   if (sid in mFile) addMethodNode(sid)
@@ -791,6 +797,14 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     AKA[aid] = AKA[aid] (AKA[aid] == "" ? "" : ",") "{\"name\":\"" jesc(Dname[i]) "\",\"to\":" (Dto[i] == "" ? "null" : "\"" jesc(Dto[i]) "\"") \
       ",\"file\":\"" jesc(Dfile[i]) "\",\"line\":" Dline[i] ",\"missing\":" ((Dto[i] != "" && !evFound) ? "true" : "false") "}"
     if (Dto[i] != "" && !evFound) addUnres(Dfile[i], Dline[i], "", "alias target not found: " Dname[i] " = " Dto[i])
+    if (Dto[i] == "" && !(aid in EVLABEL)) { EVLABEL[aid] = Dname[i]; NFL[aid] = Dfile[i]; NLn[aid] = Dline[i] }
+  }
+  # events are named after the constant that holds their value (easier to find in an IDE than
+  # the string); without one, after the reference used in the code, else the quoted string
+  for (id in NK) if (NK[id] == "event") {
+    if (id in EVLABEL) NL[id] = EVLABEL[id]
+    else if (id in EVRAW) NL[id] = EVRAW[id]
+    else NL[id] = "\"" substr(id, 7) "\""
   }
 
   # ---- write JSON ----
@@ -818,13 +832,13 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     }
     if (!((id in USED) || kind == "event" || kind == "endpoint")) continue
     CNT[kind]++
-    printf "%s{\"id\":\"%s\",\"kind\":\"%s\",\"label\":\"%s\",\"cls\":\"%s\",\"file\":%s,\"abs\":%s,\"line\":%s,\"roles\":[%s],\"path\":%s,\"verb\":%s,\"aka\":[%s]}", \
+    printf "%s{\"id\":\"%s\",\"kind\":\"%s\",\"label\":\"%s\",\"cls\":\"%s\",\"file\":%s,\"abs\":%s,\"line\":%s,\"roles\":[%s],\"path\":%s,\"verb\":%s,\"aka\":[%s],\"value\":%s}", \
       (first ? "" : ","), jesc(id), kind, jesc(NL[id]), jesc(NC[id]), \
       (NFL[id] == "" ? "null" : "\"" jesc(NFL[id]) "\""), \
       (NFL[id] == "" ? "null" : "\"" jesc(root "/" NFL[id]) "\""), \
       (NLn[id] == "" ? "null" : NLn[id]), roles, \
       ((id in mPath) ? "\"" jesc(mPath[id]) "\"" : "null"), \
-      (((id in mVerb) && mVerb[id] != "") ? "\"" mVerb[id] "\"" : "null"), AKA[id] > outfile
+      (((id in mVerb) && mVerb[id] != "") ? "\"" mVerb[id] "\"" : "null"), AKA[id], (kind == "event" ? "\"" jesc(substr(id, 7)) "\"" : "null") > outfile
     first = 0
   }
   printf "],\"unresolved\":[" > outfile
@@ -887,7 +901,7 @@ aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-
 .navtabs button.on,.btn.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 #count{color:var(--mute);font-size:12px;padding:0 12px 6px}
 #results{list-style:none;margin:0;padding:0 6px 10px;overflow:auto;flex:1}
-#results li{padding:6px 8px;border-radius:6px;cursor:pointer;display:flex;gap:8px;align-items:flex-start}
+#results li>div{min-width:0;overflow-wrap:anywhere}#results li{padding:6px 8px;border-radius:6px;cursor:pointer;display:flex;gap:8px;align-items:flex-start}
 #results li:hover{background:var(--hi)}#results li.sel{background:var(--hi);outline:1px solid var(--acc)}
 .ic{width:20px;flex:none;text-align:center;font-weight:700}
 .k-endpoint{color:var(--ep)}.k-event{color:var(--ev)}.k-handler{color:var(--hd)}.k-method{color:var(--me)}.k-lambda{color:var(--la)}.k-class{color:var(--cl)}
@@ -925,9 +939,8 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .ge{fill:none;stroke-width:1.5;opacity:.8;transition:opacity .15s}.ge:hover{stroke-width:3}.ge.emits{stroke:var(--ev)}.ge.handled_by{stroke:var(--hd)}.ge.calls{stroke:var(--me);stroke-dasharray:5 3}.ge.via{stroke-dasharray:1.5 3}.ge.more{stroke:var(--line);stroke-dasharray:3 3}
 .gn,.gmore{transition:opacity .15s}#gvp.dim .gn:not(.hl),#gvp.dim .gmore{opacity:.28}#gvp.dim .ge:not(.hl){opacity:.08}#gvp.dim .ge.hl{stroke-width:2.6;opacity:1}
 .gmore{cursor:pointer}.gmore rect{fill:var(--panel);stroke:var(--mute);stroke-dasharray:3 3}.gmore text{fill:var(--mute);font-size:12px;text-anchor:middle}.gmore:hover rect{stroke:var(--acc)}
-#ginfo{position:absolute;top:10px;left:10px;max-width:min(340px,calc(100% - 20px));background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.15);font-size:13px;display:none}
-#ginfo.on{display:block}#ginfo .gi-name{font-weight:600;word-break:break-all;margin:4px 0}#ginfo .gi-btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-#ginfo .x{position:absolute;top:4px;right:9px;cursor:pointer;color:var(--mute)}#ginfo .btn:disabled{opacity:.4;cursor:default}
+#ghead .title .gsel{color:var(--acc)}#ghead .loc{min-height:18px}
+.gh-btns{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}.gh-btns .btn:disabled{opacity:.4;cursor:default}
 .glegend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
 @media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}}
 </style></head><body>
@@ -963,7 +976,7 @@ const asTag=e=>e.a?` <span class="alias" title="Written in the code as the alias
 function akaHtml(n){const list=akaOf(n);if(!list.length)return'';
  return `<div class="section"><h3>Names in code (${list.length})</h3><table>${list.map(a=>`<tr><td><code>${esc(a.name)}</code></td><td>${a.to
   ?`<span class="alias">alias of</span> <code>${esc(a.to)}</code>${a.missing?' <span class="cyc">target not found</span>':''}`
-  :`= <code>"${esc(n.label)}"</code>`}</td><td>${link(a.file,absOf(a.file),a.line)}</td></tr>`).join('')}</table>
+  :`= <code>"${esc(n.value)}"</code>`}</td><td>${link(a.file,absOf(a.file),a.line)}</td></tr>`).join('')}</table>
   ${aliasesOf(n).length?'<div class="help">Emits and listeners using any of these names are merged into this event.</div>':''}</div>`;}
 const KIND={endpoint:['🌐','Endpoint'],event:['⚡','Event'],handler:['🎧','Handler'],method:['ƒ','Method'],lambda:['λ','Lambda'],class:['◆','Class']};
 const ORDER=['endpoint','event','handler','lambda','method','class'];
@@ -975,11 +988,15 @@ function hrefOf(file,abs,line){const t=DATA.meta.link_template||'';
 function link(file,abs,line,text){if(!file)return'';const href=hrefOf(file,abs,line);
  return `<a class="lnk" href="${esc(href)}" title="${esc(file)}:${line}">${esc(text||(file.split('/').pop()+':'+line))}</a>`;}
 function ic(n){const k=KIND[n.kind]||['?',''];return `<span class="ic k-${n.kind}" title="${k[1]}">${k[0]}</span>`;}
-function sub(n){if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;if(n.kind==='event'){const e=(IN.get(n.id)||[]).filter(x=>x.k==='emits').length,h=(OUT.get(n.id)||[]).length;return `${e} emitter(s) · ${h} listener(s)`;}return n.cls||'';}
+function sub(n){if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;
+ if(n.kind==='event'){const e=(IN.get(n.id)||[]).filter(x=>x.k==='emits').length,h=(OUT.get(n.id)||[]).length;
+  return `${n.value!=null&&!(n.label||'').startsWith('"')?'"'+n.value+'" · ':''}${e} emitter(s) · ${h} listener(s)`;}
+ // the class is left out when the name already starts with it (Listeners.mail() / demo.Listeners)
+ const c=n.cls||'';return c&&!(n.label||'').startsWith(c.split('.').pop()+'.')?c:'';}
 // chips
 for(const k of ORDER){const c=document.createElement('span');c.className='chip k-'+k;c.textContent=KIND[k][0]+' '+KIND[k][1]+' ('+DATA.nodes.filter(n=>n.kind===k).length+')';
  c.onclick=()=>{enabled.has(k)?enabled.delete(k):enabled.add(k);c.classList.toggle('off');renderList();};$('#chips').appendChild(c);}
-const hay=new Map(DATA.nodes.map(n=>[n.id,[n.label,n.id,n.path,n.verb,n.file,n.cls,...akaOf(n).map(a=>a.name)].join(' ').toLowerCase()]));
+const hay=new Map(DATA.nodes.map(n=>[n.id,[n.label,n.id,n.value,n.path,n.verb,n.file,n.cls,...akaOf(n).map(a=>a.name)].join(' ').toLowerCase()]));
 function renderList(){const toks=$('#q').value.toLowerCase().split(/\s+/).filter(Boolean);
  let r=DATA.nodes.filter(n=>enabled.has(n.kind)&&toks.every(t=>hay.get(n.id).includes(t)));
  r.sort((a,b)=>ORDER.indexOf(a.kind)-ORDER.indexOf(b.kind)||a.label.localeCompare(b.label));
@@ -997,7 +1014,7 @@ function select(id){selected=id;const n=N.get(id);renderList();
  if(view==='graph'){drawGraph(null,true);return;}
  const roles=(n.roles||[]).filter(r=>r!==n.kind).map(r=>`<span class="badge k-${r}">${r}</span>`).join(' ');
  $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${esc(n.label)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${roles}</div>
- <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
+ <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
  <div class="toolbar"><button class="btn" data-d="fwd">Trace forward ▶</button><button class="btn" data-d="bwd">◀ Trace back</button>
  <span class="sub">depth</span><select id="depth">${[2,3,4,6,8,12,20].map(d=>`<option ${d===maxDepth?'selected':''}>${d}</option>`).join('')}</select>
  <button class="btn" id="expand">Expand all</button><button class="btn" id="collapse">Collapse</button><button class="btn" id="copy">Copy as text</button>
@@ -1051,9 +1068,9 @@ $('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
 // graph: centered on the selected item, incoming links on the left, outgoing on the right.
 // Each node has two badges: ◂ (top left) opens its incoming links, ▸ (top right) its outgoing ones.
 const G={center:null,open:new Set(),lim:new Map(),pos:new Map(),t:{x:0,y:0,k:1},hide:false,auto:true,focus:null,dragged:false};
-const GW=224,GH=50,GX=330,GY=68,GLIM=25;
-const trunc=(s,n)=>{s=String(s??'');return s.length>n?s.slice(0,n-1)+'…':s;};
-const ltrunc=(s,n)=>{s=String(s??'');return s.length>n?'…'+s.slice(-(n-1)):s;};
+// Node sizes follow their text: each column is as wide as its longest name (GMIN..GMAX), names
+// still too long wrap at dots / camelCase humps, and node height follows the number of lines.
+const GMIN=190,GMAX=400,GHMIN=46,LH=14,GAP=96,VGAP=20,GLIM=25;
 const isOpen=(id,d)=>G.open.has(id+'|'+d);
 const keyId=k=>k.slice(0,k.lastIndexOf('|'));
 function uniqNext(id,d){const seen=new Map(),r=[];
@@ -1061,22 +1078,42 @@ function uniqNext(id,d){const seen=new Map(),r=[];
   if(o){if(e.a&&!o.a)o.a=e.a;continue;}const c={...e};seen.set(e.id,c);r.push(c);}return r;}
 // one outline per kind: endpoint = hexagon, event = parallelogram, handler = pill,
 // lambda = cut corners, method = square corners, class = rounded with a double border
-function shapeD(kind,w,h){const r=h/2,s=Math.round(h*.25),c=Math.round(h*.2),q=Math.round(h*.14);switch(kind){
- case 'endpoint':return `M${s},0H${w-s}L${w},${r}L${w-s},${h}H${s}L0,${r}Z`;
+function shapeD(kind,w,h){const r=Math.min(h/2,23),s=Math.round(Math.min(h,50)*.25),c=Math.round(Math.min(h,50)*.2),q=Math.round(Math.min(h,50)*.14);switch(kind){
+ case 'endpoint':return `M${s},0H${w-s}L${w},${h/2}L${w-s},${h}H${s}L0,${h/2}Z`;
  case 'event':return `M${s},0H${w}L${w-s},${h}H0Z`;
- case 'handler':return `M${r},0H${w-r}A${r},${r} 0 0 1 ${w-r},${h}H${r}A${r},${r} 0 0 1 ${r},0Z`;
+ case 'handler':return `M${r},0H${w-r}A${r},${r} 0 0 1 ${w},${r}V${h-r}A${r},${r} 0 0 1 ${w-r},${h}H${r}A${r},${r} 0 0 1 0,${h-r}V${r}A${r},${r} 0 0 1 ${r},0Z`;
  case 'lambda':return `M${c},0H${w-c}L${w},${c}V${h-c}L${w-c},${h}H${c}L0,${h-c}V${c}Z`;
  case 'class':return `M0,${q}Q0,0 ${q},0H${w-q}Q${w},0 ${w},${q}V${h-q}Q${w},${h} ${w-q},${h}H${q}Q0,${h} 0,${h-q}Z`;
  default:return `M0,0H${w}V${h}H0Z`;}}
 const PAD={endpoint:15,event:15,handler:17,lambda:12,method:10,class:11};
-// "Owner.member(...)" -> ["Owner", "member(...)"]; events keep their dotted name whole
-function splitName(n){const L=n.label||'';if(n.kind==='event')return [null,L];
+// text measuring, with the page font
+const MC=document.createElement('canvas').getContext('2d');let FAM=null;
+const FSZ={gp:'10px',gm:'600 12.5px',gs:'10.5px',gal2:'italic 10px',gal:'italic 10.5px'};
+function tw(s,c){FAM=FAM||getComputedStyle(document.body).fontFamily;MC.font=FSZ[c]+' '+FAM;return MC.measureText(s).width;}
+// break points: after . _ , ( / : # - and at camelCase humps (fooBar, HTTPServer)
+function segs(s){const out=[];let cur='';for(let i=0;i<s.length;i++){const a=s[i-1],b=s[i],c=s[i+1];
+ if(cur&&(/[._,(/:#\-]/.test(a)||(/[a-z0-9]/.test(a)&&/[A-Z]/.test(b))||(/[A-Z]/.test(a)&&/[A-Z]/.test(b)&&c&&/[a-z]/.test(c)))){out.push(cur);cur='';}cur+=b;}
+ if(cur)out.push(cur);return out;}
+function ell(s,c,w){if(tw(s,c)<=w)return s;while(s.length>1&&tw(s+'…',c)>w)s=s.slice(0,-1);return s+'…';}
+function lell(s,c,w){if(tw(s,c)<=w)return s;while(s.length>1&&tw('…'+s,c)>w)s=s.slice(1);return '…'+s;}
+function wrap(s,c,w,max){if(tw(s,c)<=w)return [s];const out=[];let cur='';
+ for(const g of segs(s)){if(cur&&tw(cur+g,c)>w){out.push(cur);cur=g;}else cur+=g;}if(cur)out.push(cur);
+ if(out.length>max){const rest=out.slice(max-1).join('');out.length=max-1;out.push(rest);}
+ return out.map(l=>ell(l,c,w));}
+// "Owner.member(...)" -> ["Owner", "member(...)"]; a quoted event value stays whole
+function splitName(n){const L=n.label||'';if(L.startsWith('"'))return [null,L];
  const p=L.indexOf('('),head=p<0?L:L.slice(0,p),cut=Math.max(head.lastIndexOf('.'),head.lastIndexOf('#'),head.lastIndexOf('::'));
  if(cut<=0)return [null,L];const sep=head.startsWith('::',cut)?2:1;return [L.slice(0,cut),L.slice(cut+sep)];}
-function gLines(n){const [own,mem]=splitName(n),lines=[],al=aliasesOf(n);
- if(al.length)return [['gm',mem,'r'],['gs',sub(n),'r'],['gal2','≡ '+al.map(a=>short(a.name)).join(', '),'r']];
- const extra=n.kind==='endpoint'&&n.path?(n.verb||'')+' '+n.path:n.kind==='event'?sub(n):(own?'':n.cls||'');
- if(own)lines.push(['gp',own,'l']);lines.push(['gm',mem,'r']);if(extra)lines.push(['gs',extra,'r']);return lines;}
+function gSpec(n){const [own,mem]=splitName(n),al=aliasesOf(n),L=[];
+ if(own)L.push({c:'gp',t:own,m:'left'});
+ L.push({c:'gm',t:mem,m:'wrap'});
+ const extra=n.kind==='endpoint'&&n.path?(n.verb||'')+' '+n.path
+  :n.kind==='event'?(n.value!=null&&!(n.label||'').startsWith('"')?'"'+n.value+'"':'')
+  :(own?'':n.cls||'');
+ if(extra)L.push({c:'gs',t:extra,m:'cut'});
+ if(al.length)L.push({c:'gal2',t:'≡ '+al.map(a=>short(a.name)).join(', '),m:'cut'});
+ return L;}
+const inner=(kind,w)=>w-(PAD[kind]||10)*2-24;   // room for text inside a node of width w
 // Breadth-first from the center through the opened directions. Each node keeps the column where it
 // was first reached (outgoing = +1, incoming = -1) and its discovery order sets its row.
 function gLayout(){const c=G.center,col=new Map([[c,0]]),seq=new Map([[c,0]]),q=[c],more=[];let n=1;
@@ -1086,24 +1123,42 @@ function gLayout(){const c=G.center,col=new Map([[c,0]]),seq=new Map([[c,0]]),q=
    if(list.length>lim)more.push({key,owner:id,d,n:list.length-lim,col:col.get(id)+s,seq:n++});}}
  const cols=new Map(),add=o=>(cols.get(o.col)||cols.set(o.col,[]).get(o.col)).push(o);
  for(const [id,cl] of col)add({id,col:cl,seq:seq.get(id)});more.forEach(add);
+ // widths: each column fits its widest node
+ const cw=new Map();
+ for(const [cl,arr] of cols){let w=GMIN;
+  for(const o of arr){if(o.key)continue;const nd=N.get(o.id);o.spec=gSpec(nd);
+   const need=Math.max(...o.spec.map(l=>tw(l.t,l.c)))+(PAD[nd.kind]||10)*2+24;w=Math.max(w,need);}
+  cw.set(cl,Math.min(GMAX,Math.ceil(w)));}
+ // gaps: wide enough for the "as ALIAS" labels drawn between two columns
+ const gap=new Map();
+ for(const [id,cl] of col)for(const e of uniqNext(id,'fwd')){if(!e.a||!col.has(e.id))continue;const c2=col.get(e.id);
+  if(Math.abs(c2-cl)!==1)continue;const g=Math.min(cl,c2),need=tw('as '+short(e.a),'gal')+44;gap.set(g,Math.max(gap.get(g)||GAP,need));}
+ const xs=new Map([[0,0]]),keys=[...cols.keys()];
+ for(let cl=1;cl<=Math.max(0,...keys);cl++)xs.set(cl,xs.get(cl-1)+cw.get(cl-1)/2+(gap.get(cl-1)||GAP)+cw.get(cl)/2);
+ for(let cl=-1;cl>=Math.min(0,...keys);cl--)xs.set(cl,xs.get(cl+1)-cw.get(cl+1)/2-(gap.get(cl)||GAP)-cw.get(cl)/2);
  const pos=new Map();
- for(const [cl,arr] of cols){arr.sort((a,b)=>a.seq-b.seq);const h=(arr.length-1)*GY;
-  arr.forEach((o,i)=>pos.set(o.key||o.id,{x:cl*GX,y:i*GY-h/2,more:o.key?o:null}));}
+ for(const [cl,arr] of cols){arr.sort((a,b)=>a.seq-b.seq);const w=cw.get(cl);
+  const items=arr.map(o=>{if(o.key)return {o,h:GHMIN,lines:null};const nd=N.get(o.id),room=inner(nd.kind,w),lines=[];
+   for(const l of o.spec){if(l.m==='wrap')wrap(l.t,l.c,room,3).forEach(t=>lines.push([l.c,t]));
+    else lines.push([l.c,l.m==='left'?lell(l.t,l.c,room):ell(l.t,l.c,room)]);}
+   return {o,h:Math.max(GHMIN,lines.length*LH+18),lines};});
+  let y=-(items.reduce((s,it)=>s+it.h,0)+VGAP*(items.length-1))/2;
+  for(const it of items){pos.set(it.o.key||it.o.id,{x:xs.get(cl),y:y+it.h/2,w,h:it.h,lines:it.lines,more:it.o.key?it.o:null});y+=it.h+VGAP;}}
  return pos;}
-function edgePath(a,b){const ax=a.x+GW/2,bx=b.x-GW/2;
+function edgePath(a,b){const ax=a.x+a.w/2,bx=b.x-b.w/2;
  if(bx>ax+10){const m=(ax+bx)/2;return `M${ax},${a.y}C${m},${a.y} ${m},${b.y} ${bx},${b.y}`;}
- if(ax>bx+GW+10){const ax2=a.x-GW/2,bx2=b.x+GW/2,m=(ax2+bx2)/2;return `M${ax2},${a.y}C${m},${a.y} ${m},${b.y} ${bx2},${b.y}`;}
- const y=Math.max(a.y,b.y)+GH/2+28;return `M${a.x},${a.y+GH/2}C${a.x},${y} ${b.x},${y} ${b.x},${b.y+GH/2}`;}
+ const ax2=a.x-a.w/2,bx2=b.x+b.w/2;
+ if(ax2>bx2+10){const m=(ax2+bx2)/2;return `M${ax2},${a.y}C${m},${a.y} ${m},${b.y} ${bx2},${b.y}`;}
+ const y=Math.max(a.y+a.h/2,b.y+b.h/2)+28;return `M${a.x},${a.y+a.h/2}C${a.x},${y} ${b.x},${y} ${b.x},${b.y+b.h/2}`;}
 function gShell(){const n=N.get(G.center),hasLinks=!!DATA.meta.link_template;
  const shapes=ORDER.map(k=>`<span><svg width="28" height="14"><path class="s-${k}" d="${shapeD(k,28,14)}" style="fill:var(--panel);stroke-width:1.4"/>${k==='class'?`<path class="s-class" transform="translate(2,2)" d="${shapeD(k,24,10)}" style="fill:none;stroke-width:1"/>`:''}</svg>${KIND[k][1]}</span>`).join('');
- $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${esc(n.label)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span></div>
- <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}</div>
+ $('#detail').innerHTML=`<div id="ghead"></div>
  <div class="toolbar"><button class="btn" id="gExpB" title="Open the incoming links of every node shown">◀ Expand all</button><button class="btn" id="gExpF" title="Open the outgoing links of every node shown">Expand all ▶</button>
  <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button><button class="btn" id="gTree">Open as tree</button>
  <label class="sub"><input type="checkbox" id="hideCalls" ${G.hide?'checked':''}> events only</label></div>
- <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node for details · double-click to center on it${hasLinks?' · Ctrl+click opens its source':''} · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
+ <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above · double-click to center on it${hasLinks?' · Ctrl+click opens its source':''} · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
  <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
-  `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg><div id="ginfo"></div></div>
+  `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
  <div class="glegend">${shapes}</div>
  <div class="glegend"><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
  <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span><span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div>`;
@@ -1139,35 +1194,37 @@ function gToggle(id,d){const key=id+'|'+d;
   const vis=gLayout();for(const k of [...G.open])if(!vis.has(keyId(k)))G.open.delete(k);}
  else if(uniqNext(id,d).length)G.open.add(key);else return;
  drawGraph(id);}
-function gBadge(id,d,pos){const all=uniqNext(id,d);if(!all.length)return'';
+function gBadge(id,d,pos,w){const all=uniqNext(id,d);if(!all.length)return'';
  const on=isOpen(id,d),hidden=all.filter(e=>!pos.has(e.id)).length;if(!on&&!hidden)return'';
  const t=on?(d==='bwd'?'◂ −':'− ▸'):(d==='bwd'?'◂ '+hidden:hidden+' ▸'),bw=Math.max(28,12+t.length*6.5);
- return `<g class="gb${on?' on':''}" data-d="${d}" transform="translate(${d==='bwd'?0:GW},0)"><title>${on?'Hide':'Show'} ${d==='bwd'?'incoming':'outgoing'} links (${all.length}${hidden?', '+hidden+' not shown':''})</title><rect x="${-bw/2}" y="-9" width="${bw}" height="18" rx="9"/><text y="4">${t}</text></g>`;}
+ return `<g class="gb${on?' on':''}" data-d="${d}" transform="translate(${d==='bwd'?0:w},0)"><title>${on?'Hide':'Show'} ${d==='bwd'?'incoming':'outgoing'} links (${all.length}${hidden?', '+hidden+' not shown':''})</title><rect x="${-bw/2}" y="-9" width="${bw}" height="18" rx="9"/><text y="4">${t}</text></g>`;}
 function drawGraph(anchor,fit){
  if(G.center!==selected){G.center=selected;G.open=new Set([selected+'|bwd',selected+'|fwd']);G.lim=new Map();G.pos=new Map();G.focus=null;fit=true;}
  if(!$('#gsvg')||$('#gsvg').dataset.c!==G.center){gShell();fit=true;}
  const old=anchor&&G.pos.get(anchor),pos=gLayout();G.pos=pos;if(G.focus&&!pos.has(G.focus))G.focus=null;
- const edges=[],seen=new Set();
+ const edges=[],labels=[],seen=new Set();
  for(const [id,p] of pos){if(p.more){const o=pos.get(p.more.owner);edges.push(`<path class="ge more" d="${p.more.d==='fwd'?edgePath(o,p):edgePath(p,o)}"/>`);continue;}
   for(const e of uniqNext(id,'fwd')){if(!pos.has(e.id)||seen.has(id+'>'+e.id))continue;seen.add(id+'>'+e.id);
-   const a=N.get(id),b=N.get(e.id),k=FWD[e.k]?e.k:'calls';
-   edges.push(`<path class="ge ${k}${e.via?' via':''}" data-s="${esc(id)}" data-d="${esc(e.id)}" d="${edgePath(p,pos.get(e.id))}" marker-end="url(#ar-${k})"><title>${esc(a.label+' '+(FWD[e.k]||e.k)+' '+b.label+(e.a?' (written as the alias '+e.a+')':'')+(e.f?' — '+e.f+':'+e.l:''))}</title></path>`);
-   // an emit or listener that names the event through an alias gets an "as ALIAS" label
-   // placed at the emitter / handler end, since several of them can meet at the event
-   if(e.a){const q=pos.get(e.id),ltr=q.x-p.x>GW,atEv=a.kind==='event';
-    const [x,y,an]=!ltr?[(p.x+q.x)/2,(p.y+q.y)/2-6,'middle']:atEv?[q.x-GW/2-6,q.y-6,'end']:[p.x+GW/2+6,p.y-6,'start'];
-    edges.push(`<text class="gal" x="${x}" y="${y}" style="text-anchor:${an}"><title>${esc('Written in the code as '+e.a)}</title>as ${esc(short(e.a))}</text>`);}}}
+   const a=N.get(id),b=N.get(e.id),k=FWD[e.k]?e.k:'calls',q=pos.get(e.id);
+   edges.push(`<path class="ge ${k}${e.via?' via':''}" data-s="${esc(id)}" data-d="${esc(e.id)}" d="${edgePath(p,q)}" marker-end="url(#ar-${k})"><title>${esc(a.label+' '+(FWD[e.k]||e.k)+' '+b.label+(e.a?' (written as the alias '+e.a+')':'')+(e.f?' — '+e.f+':'+e.l:''))}</title></path>`);
+   // an emit or listener that names the event through an alias gets an "as ALIAS" label at the
+   // emitter / handler end (several can meet at the event); the column gap is sized to fit it,
+   // and labels are drawn above the nodes
+   if(e.a){const ltr=(q.x-q.w/2)-(p.x+p.w/2)>10,atEv=a.kind==='event';
+    // just under the line, clear of the corner badges
+    const [x,y,an]=!ltr?[(p.x+q.x)/2,(p.y+q.y)/2-6,'middle']:atEv?[q.x-q.w/2-8,q.y+15,'end']:[p.x+p.w/2+8,p.y+15,'start'];
+    labels.push(`<text class="gal" x="${x}" y="${y}" style="text-anchor:${an}"><title>${esc('Written in the code as '+e.a)}</title>as ${esc(short(e.a))}</text>`);}}}
  const nodes=[];
- for(const [id,p] of pos){
-  if(p.more){nodes.push(`<g class="gmore" data-key="${esc(id)}" transform="translate(${p.x-GW/2},${p.y-GH/2})"><title>Show ${Math.min(GLIM,p.more.n)} more</title><rect width="${GW}" height="${GH}" rx="8"/><text x="${GW/2}" y="${GH/2+4}">+${p.more.n} more…</text></g>`);continue;}
-  const n=N.get(id),pad=PAD[n.kind]||10,tx=pad+20,chars=Math.floor((GW-tx-pad+4)/6.6),lines=gLines(n),y0=GH/2-(lines.length-1)*7+4;
-  const txt=lines.map(([c,s,side],i)=>`<text class="${c}" x="${tx}" y="${y0+i*14}">${esc(side==='l'?ltrunc(s,chars+3):trunc(s,c==='gs'?chars+3:chars))}</text>`).join('');
+ for(const [id,p] of pos){const {w,h}=p;
+  if(p.more){nodes.push(`<g class="gmore" data-key="${esc(id)}" transform="translate(${p.x-w/2},${p.y-h/2})"><title>Show ${Math.min(GLIM,p.more.n)} more</title><rect width="${w}" height="${h}" rx="8"/><text x="${w/2}" y="${h/2+4}">+${p.more.n} more…</text></g>`);continue;}
+  const n=N.get(id),pad=PAD[n.kind]||10,tx=pad+20,y0=h/2-(p.lines.length-1)*LH/2+4;
+  const txt=p.lines.map(([c,s],i)=>`<text class="${c}" x="${tx}" y="${y0+i*LH}">${esc(s)}</text>`).join('');
   const nin=uniqNext(id,'bwd').length,nout=uniqNext(id,'fwd').length;
-  const tip=`${KIND[n.kind][1]}: ${n.label}${n.path?'\n'+(n.verb||'')+' '+n.path:''}${n.cls?'\n'+n.cls:''}${n.file?'\n'+n.file+':'+n.line:''}\n${nin} incoming · ${nout} outgoing`;
-  nodes.push(`<g class="gn${id===G.center?' ctr':''}" data-id="${esc(id)}" transform="translate(${p.x-GW/2},${p.y-GH/2})"><title>${esc(tip)}</title>
-   <path class="box s-${n.kind}" d="${shapeD(n.kind,GW,GH)}"/>${n.kind==='class'?`<path class="box2 s-class" transform="translate(3,3)" d="${shapeD('class',GW-6,GH-6)}"/>`:''}
-   <text class="ki f-${n.kind}" x="${pad}" y="${GH/2+5}">${KIND[n.kind][0]}</text>${txt}${gBadge(id,'bwd',pos)}${gBadge(id,'fwd',pos)}</g>`);}
- $('#gvp').innerHTML=edges.join('')+nodes.join('');
+  const tip=`${KIND[n.kind][1]}: ${n.label}${n.value!=null?'\n"'+n.value+'"':''}${n.path?'\n'+(n.verb||'')+' '+n.path:''}${n.cls?'\n'+n.cls:''}${n.file?'\n'+n.file+':'+n.line:''}\n${nin} incoming · ${nout} outgoing`;
+  nodes.push(`<g class="gn${id===G.center?' ctr':''}" data-id="${esc(id)}" transform="translate(${p.x-w/2},${p.y-h/2})"><title>${esc(tip)}</title>
+   <path class="box s-${n.kind}" d="${shapeD(n.kind,w,h)}"/>${n.kind==='class'?`<path class="box2 s-class" transform="translate(3,3)" d="${shapeD('class',w-6,h-6)}"/>`:''}
+   <text class="ki f-${n.kind}" x="${pad}" y="${h/2+5}">${KIND[n.kind][0]}</text>${txt}${gBadge(id,'bwd',pos,w)}${gBadge(id,'fwd',pos,w)}</g>`);}
+ $('#gvp').innerHTML=edges.join('')+nodes.join('')+labels.join('');
  if(fit)gFit();
  else if(old&&pos.get(anchor)){G.auto=false;const p=pos.get(anchor);G.t.x-=(p.x-old.x)*G.t.k;G.t.y-=(p.y-old.y)*G.t.k;}
  gApply();gHighlight();gInfo();}
@@ -1177,24 +1234,24 @@ function gHighlight(){const vp=$('#gvp');if(!vp)return;vp.querySelectorAll('.hl,
  vp.classList.toggle('dim',!!G.focus);if(!G.focus)return;const f=G.focus,mark=id=>{const g=vp.querySelector(`.gn[data-id="${CSS.escape(id)}"]`);if(g)g.classList.add('hl');return g;};
  vp.querySelectorAll('.ge[data-s]').forEach(e=>{if(e.dataset.s===f||e.dataset.d===f){e.classList.add('hl');mark(e.dataset.s===f?e.dataset.d:e.dataset.s);}});
  const g=mark(f);if(g)g.classList.add('foc');}
-function gInfo(){const box=$('#ginfo');if(!box)return;if(!G.focus){box.classList.remove('on');return;}
- const n=N.get(G.focus),i=uniqNext(n.id,'bwd').length,o=uniqNext(n.id,'fwd').length;
- box.innerHTML=`<span class="x" id="giX" title="Close (Esc)">✕</span><div>${ic(n)} <span class="badge k-${n.kind}">${KIND[n.kind][1]}</span></div>
- <div class="gi-name">${esc(n.label)}</div>${n.path?`<div><code>${esc((n.verb||'')+' '+n.path)}</code></div>`:''}
- ${n.cls?`<div class="sub">${esc(n.cls)}</div>`:''}${n.file?`<div>${link(n.file,n.abs,n.line,n.file+':'+n.line)}</div>`:''}
- ${akaOf(n).map(a=>`<div class="sub"><code>${esc(a.name)}</code> ${a.to?`<span class="alias">alias of</span> <code>${esc(a.to)}</code>${a.missing?' <span class="cyc">not found</span>':''}`:''} ${link(a.file,absOf(a.file),a.line)}</div>`).join('')}
- <div class="gi-btns"><button class="btn${isOpen(n.id,'bwd')?' on':''}" data-gd="bwd" ${i?'':'disabled'}>◀ ${i} incoming</button>
- <button class="btn${isOpen(n.id,'fwd')?' on':''}" data-gd="fwd" ${o?'':'disabled'}>${o} outgoing ▶</button>
- ${n.id!==G.center?'<button class="btn" id="giC">Center here</button>':''}<button class="btn" id="giT">Open as tree</button></div>`;
- box.classList.add('on');
- $('#giX').onclick=()=>gFocus(null);
+// the top of the graph view describes the selected node, or the center when nothing is selected
+function gInfo(){const box=$('#ghead');if(!box)return;const n=N.get(G.focus||G.center),sel=!!G.focus&&G.focus!==G.center;
+ const i=uniqNext(n.id,'bwd').length,o=uniqNext(n.id,'fwd').length,al=aliasesOf(n);
+ box.innerHTML=`<div class="title">${ic(n)}<h2>${esc(n.label)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
+ <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}${al.length?` · <span class="alias" title="${esc(al.map(a=>a.name+' = '+a.to+(a.missing?' (target not found)':'')).join(' · '))}">≡ ${esc(al.map(a=>short(a.name)).join(', '))}</span>`:''}</div>
+ <div class="gh-btns"><button class="btn${isOpen(n.id,'bwd')?' on':''}" data-gd="bwd" ${i?'':'disabled'} title="Show or hide its incoming links">◀ ${i} incoming</button>
+ <button class="btn${isOpen(n.id,'fwd')?' on':''}" data-gd="fwd" ${o?'':'disabled'} title="Show or hide its outgoing links">${o} outgoing ▶</button>
+ ${sel?'<button class="btn" id="ghC">Center here</button>':''}<button class="btn" id="ghT">Open as tree</button>
+ ${sel?`<button class="btn" id="ghX" title="Esc">✕ Back to ${esc(trimL(N.get(G.center).label))}</button>`:''}</div>`;
  box.querySelectorAll('[data-gd]').forEach(b=>b.onclick=()=>gToggle(n.id,b.dataset.gd));
- if($('#giC'))$('#giC').onclick=()=>go(n.id);
- $('#giT').onclick=()=>{setView('browse');n.id===selected?select(n.id):go(n.id);};}
+ if($('#ghC'))$('#ghC').onclick=()=>go(n.id);
+ if($('#ghX'))$('#ghX').onclick=()=>gFocus(null);
+ $('#ghT').onclick=()=>{setView('browse');n.id===selected?select(n.id):go(n.id);};}
+const trimL=s=>s.length>40?s.slice(0,39)+'…':s;
 document.addEventListener('keydown',e=>{if(view!=='graph'||!$('#gsvg')||/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))return;
  if(e.key==='Escape')gFocus(null);else if(e.key==='f'||e.key==='F'){gFit();gApply();}});
 function gFit(){const svg=$('#gsvg'),W=svg.clientWidth||800,H=svg.clientHeight||500;let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
- for(const p of G.pos.values()){x0=Math.min(x0,p.x-GW/2-16);x1=Math.max(x1,p.x+GW/2+16);y0=Math.min(y0,p.y-GH/2-12);y1=Math.max(y1,p.y+GH/2+30);}
+ for(const p of G.pos.values()){x0=Math.min(x0,p.x-p.w/2-16);x1=Math.max(x1,p.x+p.w/2+16);y0=Math.min(y0,p.y-p.h/2-12);y1=Math.max(y1,p.y+p.h/2+30);}
  const k=Math.min(1.1,W/(x1-x0+60),H/(y1-y0+60));G.auto=true;G.t={k,x:W/2-(x0+x1)/2*k,y:H/2-(y0+y1)/2*k};}
 function gApply(){$('#gvp').setAttribute('transform',`translate(${G.t.x},${G.t.y}) scale(${G.t.k})`);}
 $('#tIssues').onclick=()=>{setView('issues');drawIssues();};
