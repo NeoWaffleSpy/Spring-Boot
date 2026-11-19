@@ -940,7 +940,7 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .gn,.gmore{transition:opacity .15s}#gvp.dim .gn:not(.hl),#gvp.dim .gmore{opacity:.28}#gvp.dim .ge:not(.hl){opacity:.08}#gvp.dim .ge.hl{stroke-width:2.6;opacity:1}
 .gmore{cursor:pointer}.gmore rect{fill:var(--panel);stroke:var(--mute);stroke-dasharray:3 3}.gmore text{fill:var(--mute);font-size:12px;text-anchor:middle}.gmore:hover rect{stroke:var(--acc)}
 #ghead .title .gsel{color:var(--acc)}#ghead .loc{min-height:18px}
-.gh-btns{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px}.gh-btns .btn:disabled{opacity:.4;cursor:default}
+.own{display:block;font-size:11px;font-weight:400;color:var(--mute);word-break:break-all;line-height:1.3}h2 .own{font-size:12px}
 .glegend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
 @media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}}
 </style></head><body>
@@ -1001,7 +1001,7 @@ function renderList(){const toks=$('#q').value.toLowerCase().split(/\s+/).filter
  let r=DATA.nodes.filter(n=>enabled.has(n.kind)&&toks.every(t=>hay.get(n.id).includes(t)));
  r.sort((a,b)=>ORDER.indexOf(a.kind)-ORDER.indexOf(b.kind)||a.label.localeCompare(b.label));
  $('#count').textContent=r.length+' result(s)'+(r.length>400?' – showing 400':'');
- $('#results').innerHTML=r.slice(0,400).map(n=>`<li data-id="${esc(n.id)}" class="${n.id===selected?'sel':''}">${ic(n)}<div><div>${esc(n.label)}</div><div class="sub">${esc(sub(n))}</div></div></li>`).join('');}
+ $('#results').innerHTML=r.slice(0,400).map(n=>`<li data-id="${esc(n.id)}" class="${n.id===selected?'sel':''}">${ic(n)}<div><div>${nameHtml(n)}</div><div class="sub">${esc(sub(n))}</div></div></li>`).join('');}
 $('#results').onclick=e=>{const li=e.target.closest('li');if(li)go(li.dataset.id);};
 $('#q').oninput=renderList;
 document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('#q')){e.preventDefault();$('#q').focus();$('#q').select();}});
@@ -1156,7 +1156,7 @@ function gShell(){const n=N.get(G.center),hasLinks=!!DATA.meta.link_template;
  <div class="toolbar"><button class="btn" id="gExpB" title="Open the incoming links of every node shown">◀ Expand all</button><button class="btn" id="gExpF" title="Open the outgoing links of every node shown">Expand all ▶</button>
  <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button><button class="btn" id="gTree">Open as tree</button>
  <label class="sub"><input type="checkbox" id="hideCalls" ${G.hide?'checked':''}> events only</label></div>
- <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above · double-click to center on it${hasLinks?' · Ctrl+click opens its source':''} · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
+ <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · double-click to center on it${hasLinks?' · Ctrl+click opens its source':''} · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
  <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
   `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
  <div class="glegend">${shapes}</div>
@@ -1236,18 +1236,11 @@ function gHighlight(){const vp=$('#gvp');if(!vp)return;vp.querySelectorAll('.hl,
  const g=mark(f);if(g)g.classList.add('foc');}
 // the top of the graph view describes the selected node, or the center when nothing is selected
 function gInfo(){const box=$('#ghead');if(!box)return;const n=N.get(G.focus||G.center),sel=!!G.focus&&G.focus!==G.center;
- const i=uniqNext(n.id,'bwd').length,o=uniqNext(n.id,'fwd').length,al=aliasesOf(n);
- box.innerHTML=`<div class="title">${ic(n)}<h2>${esc(n.label)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
- <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}${al.length?` · <span class="alias" title="${esc(al.map(a=>a.name+' = '+a.to+(a.missing?' (target not found)':'')).join(' · '))}">≡ ${esc(al.map(a=>short(a.name)).join(', '))}</span>`:''}</div>
- <div class="gh-btns"><button class="btn${isOpen(n.id,'bwd')?' on':''}" data-gd="bwd" ${i?'':'disabled'} title="Show or hide its incoming links">◀ ${i} incoming</button>
- <button class="btn${isOpen(n.id,'fwd')?' on':''}" data-gd="fwd" ${o?'':'disabled'} title="Show or hide its outgoing links">${o} outgoing ▶</button>
- ${sel?'<button class="btn" id="ghC">Center here</button>':''}<button class="btn" id="ghT">Open as tree</button>
- ${sel?`<button class="btn" id="ghX" title="Esc">✕ Back to ${esc(trimL(N.get(G.center).label))}</button>`:''}</div>`;
- box.querySelectorAll('[data-gd]').forEach(b=>b.onclick=()=>gToggle(n.id,b.dataset.gd));
- if($('#ghC'))$('#ghC').onclick=()=>go(n.id);
- if($('#ghX'))$('#ghX').onclick=()=>gFocus(null);
- $('#ghT').onclick=()=>{setView('browse');n.id===selected?select(n.id):go(n.id);};}
-const trimL=s=>s.length>40?s.slice(0,39)+'…':s;
+ const al=aliasesOf(n);
+ box.innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
+ <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}${al.length?` · <span class="alias" title="${esc(al.map(a=>a.name+' = '+a.to+(a.missing?' (target not found)':'')).join(' · '))}">≡ ${esc(al.map(a=>short(a.name)).join(', '))}</span>`:''}</div>`;}
+// "ClassName.member" on two lines: the owner small and grey above, the member below
+function nameHtml(n){const [own,mem]=splitName(n);return (own?`<span class="own">${esc(own)}</span>`:'')+esc(mem);}
 document.addEventListener('keydown',e=>{if(view!=='graph'||!$('#gsvg')||/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))return;
  if(e.key==='Escape')gFocus(null);else if(e.key==='f'||e.key==='F'){gFit();gApply();}});
 function gFit(){const svg=$('#gsvg'),W=svg.clientWidth||800,H=svg.clientHeight||500;let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
