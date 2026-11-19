@@ -440,14 +440,31 @@ function annEvents(s, e,   j, n, ch, key, pdep) {
   return n
 }
 
-function fieldCheck(i,   fq, nm, j, ad, s, hasS, hasF) {
+function fieldCheck(i,   fq, nm, j, ad, s, hasS, hasF, q, tgt) {
   fq = ctxFq[depth]; if (fq == "") return
   nm = T[i - 1]; if (K[i - 1] != "i" || (nm in CTRL)) return
   j = i - 2
-  if (T[i] == "=" && T[j] == "String" && K[i + 1] == "s" && T[i + 2] == ";") {
+  if (T[i] == "=" && T[j] == "String" && (K[i + 1] == "s" || K[i + 1] == "i")) {
     hasS = 0; hasF = 0
     for (s = j - 1; s > 0 && T[s] != ";" && T[s] != "{" && T[s] != "}"; s--) { if (T[s] == "static") hasS = 1; if (T[s] == "final") hasF = 1 }
-    if ((hasS && hasF) || tKind[fq] == "interface") { if (!(nm in CONST)) CONST[nm] = T[i + 1]; CONST[tSimple[fq] "." nm] = T[i + 1] }
+    if ((hasS && hasF) || tKind[fq] == "interface") {
+      if (K[i + 1] == "s" && T[i + 2] == ";") {
+        if (!(nm in CONST) && !(nm in ALIAS)) CONST[nm] = T[i + 1]
+        CONST[tSimple[fq] "." nm] = T[i + 1]
+        nDef++; Dname[nDef] = tSimple[fq] "." nm; Dto[nDef] = ""; Dfile[nDef] = rel; Dline[nDef] = L[i]
+      }
+      else if (K[i + 1] == "i") {
+        # alias of another constant: String A = Other.B;  (or = B; inside the same class)
+        q = i + 1; tgt = T[q]
+        while (T[q + 1] == "." && K[q + 2] == "i") { q += 2; tgt = tgt "." T[q] }
+        if (T[q + 1] == ";") {
+          if (index(tgt, ".") == 0) tgt = tSimple[fq] "." tgt
+          if (!(nm in CONST) && !(nm in ALIAS)) ALIAS[nm] = tgt
+          ALIAS[tSimple[fq] "." nm] = tgt
+          nDef++; Dname[nDef] = tSimple[fq] "." nm; Dto[nDef] = tgt; Dfile[nDef] = rel; Dline[nDef] = L[i]
+        }
+      }
+    }
   }
   while (T[j] == "]" && T[j - 1] == "[") j -= 2
   if (T[j] == ">") {
@@ -546,13 +563,19 @@ function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, 
 }
 
 # ------------------------------------------------------------- resolution ---
-function normEv(r,   ch, n, parts, k, key, m) {
-  if (substr(r, 1, 2) == "S:") return substr(r, 3)
+# Event name for a raw reference. A constant gives its string value; a constant that is an
+# alias of another one (String A = Other.B;) is followed to the end of the chain.
+# Sets evAs to the name written in the code when an alias was followed, and evFound to 1
+# when a string value was reached.
+function normEv(r) { evAs = ""; evFound = 0; return evName(r, 0) }
+function evName(r, dep,   ch, n, parts, k, key, m) {
+  if (substr(r, 1, 2) == "S:") { evFound = 1; return substr(r, 3) }
   ch = substr(r, 3); sub(/\.class$/, "", ch)
   n = split(ch, parts, ".")
   for (k = 1; k <= n; k++) {
     key = parts[k]; for (m = k + 1; m <= n; m++) key = key "." parts[m]
-    if (key in CONST) return CONST[key]
+    if (key in CONST) { evFound = 1; return CONST[key] }
+    if ((key in ALIAS) && dep < 10) { if (dep == 0) evAs = ch; return evName("C:" ALIAS[key], dep + 1) }
   }
   return parts[n]
 }
@@ -666,7 +689,7 @@ function classCallbacks(fq,   out, i, m) {
   if (out == "") return addClassNode(fq)
   return substr(out, 2)
 }
-function addEdge(s, d, k, f, l) { E[s SUBSEP d SUBSEP k SUBSEP f SUBSEP l] = 1 }
+function addEdge(s, d, k, f, l, as) { E[s SUBSEP d SUBSEP k SUBSEP f SUBSEP l SUBSEP as] = 1 }
 function scopeLabel(sid) {
   if (sid in mFile) return tQual[mFq[sid]] "." mName[sid] "()"
   if (substr(sid, 1, 6) == "class:") return (substr(sid, 7) in tQual) ? tQual[substr(sid, 7)] : substr(sid, 7)
@@ -674,7 +697,7 @@ function scopeLabel(sid) {
 }
 
 function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, right, ft, list, t2, c, recv, nm, cls,
-                            key, ep, s, d, qh, qt, cur, id, first, roles, rr, nr, i, lid, kk) {
+                            key, ep, s, d, qh, qt, cur, id, first, roles, rr, nr, i, lid, kk, evUsed, v, aid) {
   # lambdas
   for (i = 1; i <= nLam; i++) {
     lid = lamOrd[i]
@@ -684,7 +707,7 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
   for (m in mFile) if (index(mRoles[m], "endpoint")) addMethodNode(m)
   # listeners
   for (n = 1; n <= nLs; n++) {
-    eid = addEvent(normEv(Lev[n])); kind = Lkind[n]; tg = Ltarget[n]; targets = ""
+    eid = addEvent(normEv(Lev[n])); evUsed = evAs; kind = Lkind[n]; tg = Ltarget[n]; targets = ""
     if (kind == "method") { addMethodNode(tg); targets = tg }
     else if (kind == "lambda") targets = tg
     else if (kind == "ref") {
@@ -721,13 +744,13 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     for (x = 1; x <= nn; x++) {
       t2 = arr[x]; if (t2 == "") continue
       if (t2 in mFile) { addRole(t2, "handler"); addMethodNode(t2) }
-      addEdge(eid, t2, "handled_by", Lfile[n], Lline[n])
+      addEdge(eid, t2, "handled_by", Lfile[n], Lline[n], evUsed)
     }
   }
   # emissions
   for (n = 1; n <= nEm; n++) {
     eid = addEvent(normEv(Eev[n]))
-    addEdge(nodeForScope(Escope[n]), eid, "emits", Efile[n], Eline[n])
+    addEdge(nodeForScope(Escope[n]), eid, "emits", Efile[n], Eline[n], evAs)
   }
   # calls
   for (c = 1; c <= nCalls; c++) {
@@ -761,6 +784,15 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
   for (id in REACH) KEEP[id] = 1
   for (id in KEEP) if (!(id in NK)) nodeForScope(id)
 
+  # constants that name each event, aliases included
+  for (i = 1; i <= nDef; i++) {
+    v = normEv("C:" Dname[i]); aid = "event:" v
+    if (!(aid in NK)) continue
+    AKA[aid] = AKA[aid] (AKA[aid] == "" ? "" : ",") "{\"name\":\"" jesc(Dname[i]) "\",\"to\":" (Dto[i] == "" ? "null" : "\"" jesc(Dto[i]) "\"") \
+      ",\"file\":\"" jesc(Dfile[i]) "\",\"line\":" Dline[i] ",\"missing\":" ((Dto[i] != "" && !evFound) ? "true" : "false") "}"
+    if (Dto[i] != "" && !evFound) addUnres(Dfile[i], Dline[i], "", "alias target not found: " Dname[i] " = " Dto[i])
+  }
+
   # ---- write JSON ----
   printf "{\"meta\":{\"root\":\"%s\",\"generated\":\"%s\",\"files\":%d,\"link_template\":\"%s\"},", jesc(root), jesc(generated), nFiles, jesc(link_template) > outfile
   printf "\"edges\":[" > outfile
@@ -769,7 +801,7 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     split(key, ep, SUBSEP)
     if (!((ep[1] in KEEP) && (ep[2] in KEEP) && (ep[1] in NK) && (ep[2] in NK))) continue
     USED[ep[1]] = 1; USED[ep[2]] = 1
-    printf "%s[\"%s\",\"%s\",\"%s\",\"%s\",%d]", (first ? "" : ","), jesc(ep[1]), jesc(ep[2]), ep[3], jesc(ep[4]), ep[5] > outfile
+    printf "%s[\"%s\",\"%s\",\"%s\",\"%s\",%d,\"%s\"]", (first ? "" : ","), jesc(ep[1]), jesc(ep[2]), ep[3], jesc(ep[4]), ep[5], jesc(ep[6]) > outfile
     first = 0; nEdges++
   }
   printf "],\"nodes\":[" > outfile
@@ -786,13 +818,13 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     }
     if (!((id in USED) || kind == "event" || kind == "endpoint")) continue
     CNT[kind]++
-    printf "%s{\"id\":\"%s\",\"kind\":\"%s\",\"label\":\"%s\",\"cls\":\"%s\",\"file\":%s,\"abs\":%s,\"line\":%s,\"roles\":[%s],\"path\":%s,\"verb\":%s}", \
+    printf "%s{\"id\":\"%s\",\"kind\":\"%s\",\"label\":\"%s\",\"cls\":\"%s\",\"file\":%s,\"abs\":%s,\"line\":%s,\"roles\":[%s],\"path\":%s,\"verb\":%s,\"aka\":[%s]}", \
       (first ? "" : ","), jesc(id), kind, jesc(NL[id]), jesc(NC[id]), \
       (NFL[id] == "" ? "null" : "\"" jesc(NFL[id]) "\""), \
       (NFL[id] == "" ? "null" : "\"" jesc(root "/" NFL[id]) "\""), \
       (NLn[id] == "" ? "null" : NLn[id]), roles, \
       ((id in mPath) ? "\"" jesc(mPath[id]) "\"" : "null"), \
-      (((id in mVerb) && mVerb[id] != "") ? "\"" mVerb[id] "\"" : "null") > outfile
+      (((id in mVerb) && mVerb[id] != "") ? "\"" mVerb[id] "\"" : "null"), AKA[id] > outfile
     first = 0
   }
   printf "],\"unresolved\":[" > outfile
@@ -879,11 +911,13 @@ aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-
 table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);padding:1px 4px;border-radius:4px;word-break:break-all}
 .help{color:var(--mute);font-size:12px;margin-top:4px}
+.alias{font-size:11px;color:var(--ev);border:1px dashed var(--ev);border-radius:4px;padding:0 5px;white-space:nowrap}
+.gal{fill:var(--ev);font-size:10.5px;font-style:italic;text-anchor:middle;paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}#gvp.dim .gal{opacity:.15}
 #gwrap{position:relative;border:1px solid var(--line);border-radius:10px;background:var(--bg);height:calc(100vh - 230px);min-height:420px;overflow:hidden;margin-top:8px}
 #gsvg{width:100%;height:100%;display:block;cursor:grab;user-select:none;touch-action:none}#gsvg.pan{cursor:grabbing}
 .gn{cursor:pointer}.gn .box{fill:var(--panel);stroke-width:1.6}.gn .box2{fill:none;stroke-width:1;opacity:.6}.gn:hover .box{fill:var(--hi)}
 .gn.ctr .box{stroke-width:3.2;fill:var(--hi)}.gn.foc .box{fill:var(--hi);filter:drop-shadow(0 0 5px var(--acc))}
-.gn text{fill:var(--ink);font-size:12px}.gn text.gp{fill:var(--mute);font-size:10px}.gn text.gm{font-weight:600;font-size:12.5px}.gn text.gs{fill:var(--mute);font-size:10.5px}.gn text.ki{font-size:14px;font-weight:700}
+.gn text{fill:var(--ink);font-size:12px}.gn text.gp{fill:var(--mute);font-size:10px}.gn text.gm{font-weight:600;font-size:12.5px}.gn text.gs{fill:var(--mute);font-size:10.5px}.gn text.ki{font-size:14px;font-weight:700}.gn text.gal2{fill:var(--ev);font-size:10px;font-style:italic}
 .s-endpoint{stroke:var(--ep)}.s-event{stroke:var(--ev)}.s-handler{stroke:var(--hd)}.s-method{stroke:var(--me)}.s-lambda{stroke:var(--la)}.s-class{stroke:var(--cl)}
 .gn text.f-endpoint{fill:var(--ep)}.gn text.f-event{fill:var(--ev)}.gn text.f-handler{fill:var(--hd)}.gn text.f-method{fill:var(--me)}.gn text.f-lambda{fill:var(--la)}.gn text.f-class{fill:var(--cl)}
 .gb{cursor:pointer}.gb rect{fill:var(--bg);stroke:var(--mute)}.gn .gb text{font-size:10.5px;font-weight:700;text-anchor:middle}.gb:hover rect{stroke:var(--acc);fill:var(--hi)}
@@ -920,7 +954,17 @@ cat <<'EOF_HTML_TAIL'
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const N=new Map(DATA.nodes.map(n=>[n.id,n])),OUT=new Map(),IN=new Map();
-for(const [s,d,k,f,l] of DATA.edges){(OUT.get(s)||OUT.set(s,[]).get(s)).push({id:d,k,f,l});(IN.get(d)||IN.set(d,[]).get(d)).push({id:s,k,f,l});}
+for(const [s,d,k,f,l,a] of DATA.edges){(OUT.get(s)||OUT.set(s,[]).get(s)).push({id:d,k,f,l,a});(IN.get(d)||IN.set(d,[]).get(d)).push({id:s,k,f,l,a});}
+// constant names of an event; "to" is set when the constant is an alias of another constant
+const akaOf=n=>n.aka||[],aliasesOf=n=>akaOf(n).filter(a=>a.to);
+const short=s=>String(s).split('.').pop();
+// the alias written in the code when an emit / listener used one
+const asTag=e=>e.a?` <span class="alias" title="Written in the code as the alias ${esc(e.a)}">as ${esc(e.a)}</span>`:'';
+function akaHtml(n){const list=akaOf(n);if(!list.length)return'';
+ return `<div class="section"><h3>Names in code (${list.length})</h3><table>${list.map(a=>`<tr><td><code>${esc(a.name)}</code></td><td>${a.to
+  ?`<span class="alias">alias of</span> <code>${esc(a.to)}</code>${a.missing?' <span class="cyc">target not found</span>':''}`
+  :`= <code>"${esc(n.label)}"</code>`}</td><td>${link(a.file,absOf(a.file),a.line)}</td></tr>`).join('')}</table>
+  ${aliasesOf(n).length?'<div class="help">Emits and listeners using any of these names are merged into this event.</div>':''}</div>`;}
 const KIND={endpoint:['🌐','Endpoint'],event:['⚡','Event'],handler:['🎧','Handler'],method:['ƒ','Method'],lambda:['λ','Lambda'],class:['◆','Class']};
 const ORDER=['endpoint','event','handler','lambda','method','class'];
 const FWD={emits:'emits',handled_by:'handled by',calls:'calls'},BWD={emits:'emitted by',handled_by:'triggered by',calls:'called by'};
@@ -935,7 +979,7 @@ function sub(n){if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;
 // chips
 for(const k of ORDER){const c=document.createElement('span');c.className='chip k-'+k;c.textContent=KIND[k][0]+' '+KIND[k][1]+' ('+DATA.nodes.filter(n=>n.kind===k).length+')';
  c.onclick=()=>{enabled.has(k)?enabled.delete(k):enabled.add(k);c.classList.toggle('off');renderList();};$('#chips').appendChild(c);}
-const hay=new Map(DATA.nodes.map(n=>[n.id,[n.label,n.id,n.path,n.verb,n.file,n.cls].join(' ').toLowerCase()]));
+const hay=new Map(DATA.nodes.map(n=>[n.id,[n.label,n.id,n.path,n.verb,n.file,n.cls,...akaOf(n).map(a=>a.name)].join(' ').toLowerCase()]));
 function renderList(){const toks=$('#q').value.toLowerCase().split(/\s+/).filter(Boolean);
  let r=DATA.nodes.filter(n=>enabled.has(n.kind)&&toks.every(t=>hay.get(n.id).includes(t)));
  r.sort((a,b)=>ORDER.indexOf(a.kind)-ORDER.indexOf(b.kind)||a.label.localeCompare(b.label));
@@ -959,7 +1003,7 @@ function select(id){selected=id;const n=N.get(id);renderList();
  <button class="btn" id="expand">Expand all</button><button class="btn" id="collapse">Collapse</button><button class="btn" id="copy">Copy as text</button>
  <label class="sub"><input type="checkbox" id="hideCalls"> events only</label></div>
  <div class="help" id="help"></div><ul class="tree" id="tree"></ul>
- <div class="section" id="direct"></div>`;
+ ${akaHtml(n)}<div class="section" id="direct"></div>`;
  document.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>{dir=b.dataset.d;drawTree();});
  $('#depth').onchange=e=>{maxDepth=+e.target.value;drawTree();};
  $('#expand').onclick=()=>expandAll($('#tree'),0);$('#collapse').onclick=drawTree;
@@ -978,7 +1022,7 @@ function drawTree(){document.querySelectorAll('[data-d]').forEach(b=>b.classList
  const t=$('#tree');t.innerHTML='';fill(t,selected,0,new Set([selected]));if(!t.children.length)t.innerHTML='<li class="sub">Nothing found in this direction.</li>';}
 function fill(ul,id,depth,path){for(const e of nextOf(id,dir)){const n=N.get(e.id);if(!n)continue;const li=document.createElement('li');
  const lab=(dir==='fwd'?FWD:BWD)[e.k]+(e.via?' (via calls)':'');
- const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm" data-id="${esc(n.id)}">${esc(n.label)}</span>${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${link(e.f,absOf(e.f),e.l)}</span>`;
+ const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm" data-id="${esc(n.id)}">${esc(n.label)}</span>${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
  const kids=nextOf(e.id,dir);
  if(path.has(e.id)){li.className='leaf';li.innerHTML=row+' <span class="cyc">↻ cycle</span>';}
  else if(!kids.length){li.className='leaf';li.innerHTML=row;}
@@ -991,12 +1035,12 @@ const ABS=new Map(DATA.nodes.filter(n=>n.file).map(n=>[n.file,n.abs]));function 
 function expandAll(root,budget){let opened=0;const step=()=>{const closed=[...root.querySelectorAll('details:not([open])')];if(!closed.length||opened>1500)return;
  closed.forEach(d=>{d.open=true;opened++;});setTimeout(step,0);};step();}
 $('#detail').addEventListener('click',e=>{const x=e.target.closest('.nm');if(x){e.preventDefault();go(x.dataset.id);}});
-function drawDirect(n){const rows=(list,lbl)=>list.map(e=>{const m=N.get(e.id);return m?`<tr><td>${esc(lbl[e.k])}</td><td>${ic(m)} <span class="nm" data-id="${esc(m.id)}">${esc(m.label)}</span></td><td>${link(e.f,absOf(e.f),e.l)}</td></tr>`:''}).join('');
+function drawDirect(n){const rows=(list,lbl)=>list.map(e=>{const m=N.get(e.id);return m?`<tr><td>${esc(lbl[e.k])}${asTag(e)}</td><td>${ic(m)} <span class="nm" data-id="${esc(m.id)}">${esc(m.label)}</span></td><td>${link(e.f,absOf(e.f),e.l)}</td></tr>`:''}).join('');
  const o=OUT.get(n.id)||[],i=IN.get(n.id)||[];
  $('#direct').innerHTML=`<h3>Direct links</h3><table><tr><th>Relation</th><th>Item</th><th>Where</th></tr>${rows(i,BWD)}${rows(o,FWD)||''}${!o.length&&!i.length?'<tr><td colspan=3 class="sub">none</td></tr>':''}</table>`;}
 function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][1]}: ${n.label}${n.path?' ['+(n.verb||'')+' '+n.path+']':''}  (${n.file||''}:${n.line||''})`);
  const walk=(cur,depth,path)=>{if(depth>=maxDepth)return;for(const e of nextOf(cur,dir)){const m=N.get(e.id);if(!m)continue;
-  lines.push(`${'  '.repeat(depth+1)}${(dir==='fwd'?FWD:BWD)[e.k]} -> ${KIND[m.kind][1]}: ${m.label}  (${e.f}:${e.l})${path.has(e.id)?'  [cycle]':''}`);
+  lines.push(`${'  '.repeat(depth+1)}${(dir==='fwd'?FWD:BWD)[e.k]} -> ${KIND[m.kind][1]}: ${m.label}${e.a?'  [as '+e.a+']':''}  (${e.f}:${e.l})${path.has(e.id)?'  [cycle]':''}`);
   if(!path.has(e.id))walk(e.id,depth+1,new Set([...path,e.id]));}};
  walk(id,0,new Set([id]));return lines.join('\n');}
 // issues
@@ -1007,13 +1051,14 @@ $('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
 // graph: centered on the selected item, incoming links on the left, outgoing on the right.
 // Each node has two badges: ◂ (top left) opens its incoming links, ▸ (top right) its outgoing ones.
 const G={center:null,open:new Set(),lim:new Map(),pos:new Map(),t:{x:0,y:0,k:1},hide:false,auto:true,focus:null,dragged:false};
-const GW=224,GH=50,GX=300,GY=68,GLIM=25;
+const GW=224,GH=50,GX=330,GY=68,GLIM=25;
 const trunc=(s,n)=>{s=String(s??'');return s.length>n?s.slice(0,n-1)+'…':s;};
 const ltrunc=(s,n)=>{s=String(s??'');return s.length>n?'…'+s.slice(-(n-1)):s;};
 const isOpen=(id,d)=>G.open.has(id+'|'+d);
 const keyId=k=>k.slice(0,k.lastIndexOf('|'));
-function uniqNext(id,d){const seen=new Set(),r=[];
- for(const e of nextOf(id,d)){if(e.id===id||seen.has(e.id)||!N.has(e.id))continue;seen.add(e.id);r.push(e);}return r;}
+function uniqNext(id,d){const seen=new Map(),r=[];
+ for(const e of nextOf(id,d)){if(e.id===id||!N.has(e.id))continue;const o=seen.get(e.id);
+  if(o){if(e.a&&!o.a)o.a=e.a;continue;}const c={...e};seen.set(e.id,c);r.push(c);}return r;}
 // one outline per kind: endpoint = hexagon, event = parallelogram, handler = pill,
 // lambda = cut corners, method = square corners, class = rounded with a double border
 function shapeD(kind,w,h){const r=h/2,s=Math.round(h*.25),c=Math.round(h*.2),q=Math.round(h*.14);switch(kind){
@@ -1028,7 +1073,8 @@ const PAD={endpoint:15,event:15,handler:17,lambda:12,method:10,class:11};
 function splitName(n){const L=n.label||'';if(n.kind==='event')return [null,L];
  const p=L.indexOf('('),head=p<0?L:L.slice(0,p),cut=Math.max(head.lastIndexOf('.'),head.lastIndexOf('#'),head.lastIndexOf('::'));
  if(cut<=0)return [null,L];const sep=head.startsWith('::',cut)?2:1;return [L.slice(0,cut),L.slice(cut+sep)];}
-function gLines(n){const [own,mem]=splitName(n),lines=[];
+function gLines(n){const [own,mem]=splitName(n),lines=[],al=aliasesOf(n);
+ if(al.length)return [['gm',mem,'r'],['gs',sub(n),'r'],['gal2','≡ '+al.map(a=>short(a.name)).join(', '),'r']];
  const extra=n.kind==='endpoint'&&n.path?(n.verb||'')+' '+n.path:n.kind==='event'?sub(n):(own?'':n.cls||'');
  if(own)lines.push(['gp',own,'l']);lines.push(['gm',mem,'r']);if(extra)lines.push(['gs',extra,'r']);return lines;}
 // Breadth-first from the center through the opened directions. Each node keeps the column where it
@@ -1105,7 +1151,12 @@ function drawGraph(anchor,fit){
  for(const [id,p] of pos){if(p.more){const o=pos.get(p.more.owner);edges.push(`<path class="ge more" d="${p.more.d==='fwd'?edgePath(o,p):edgePath(p,o)}"/>`);continue;}
   for(const e of uniqNext(id,'fwd')){if(!pos.has(e.id)||seen.has(id+'>'+e.id))continue;seen.add(id+'>'+e.id);
    const a=N.get(id),b=N.get(e.id),k=FWD[e.k]?e.k:'calls';
-   edges.push(`<path class="ge ${k}${e.via?' via':''}" data-s="${esc(id)}" data-d="${esc(e.id)}" d="${edgePath(p,pos.get(e.id))}" marker-end="url(#ar-${k})"><title>${esc(a.label+' '+(FWD[e.k]||e.k)+' '+b.label+(e.f?' — '+e.f+':'+e.l:''))}</title></path>`);}}
+   edges.push(`<path class="ge ${k}${e.via?' via':''}" data-s="${esc(id)}" data-d="${esc(e.id)}" d="${edgePath(p,pos.get(e.id))}" marker-end="url(#ar-${k})"><title>${esc(a.label+' '+(FWD[e.k]||e.k)+' '+b.label+(e.a?' (written as the alias '+e.a+')':'')+(e.f?' — '+e.f+':'+e.l:''))}</title></path>`);
+   // an emit or listener that names the event through an alias gets an "as ALIAS" label
+   // placed at the emitter / handler end, since several of them can meet at the event
+   if(e.a){const q=pos.get(e.id),ltr=q.x-p.x>GW,atEv=a.kind==='event';
+    const [x,y,an]=!ltr?[(p.x+q.x)/2,(p.y+q.y)/2-6,'middle']:atEv?[q.x-GW/2-6,q.y-6,'end']:[p.x+GW/2+6,p.y-6,'start'];
+    edges.push(`<text class="gal" x="${x}" y="${y}" style="text-anchor:${an}"><title>${esc('Written in the code as '+e.a)}</title>as ${esc(short(e.a))}</text>`);}}}
  const nodes=[];
  for(const [id,p] of pos){
   if(p.more){nodes.push(`<g class="gmore" data-key="${esc(id)}" transform="translate(${p.x-GW/2},${p.y-GH/2})"><title>Show ${Math.min(GLIM,p.more.n)} more</title><rect width="${GW}" height="${GH}" rx="8"/><text x="${GW/2}" y="${GH/2+4}">+${p.more.n} more…</text></g>`);continue;}
@@ -1131,6 +1182,7 @@ function gInfo(){const box=$('#ginfo');if(!box)return;if(!G.focus){box.classList
  box.innerHTML=`<span class="x" id="giX" title="Close (Esc)">✕</span><div>${ic(n)} <span class="badge k-${n.kind}">${KIND[n.kind][1]}</span></div>
  <div class="gi-name">${esc(n.label)}</div>${n.path?`<div><code>${esc((n.verb||'')+' '+n.path)}</code></div>`:''}
  ${n.cls?`<div class="sub">${esc(n.cls)}</div>`:''}${n.file?`<div>${link(n.file,n.abs,n.line,n.file+':'+n.line)}</div>`:''}
+ ${akaOf(n).map(a=>`<div class="sub"><code>${esc(a.name)}</code> ${a.to?`<span class="alias">alias of</span> <code>${esc(a.to)}</code>${a.missing?' <span class="cyc">not found</span>':''}`:''} ${link(a.file,absOf(a.file),a.line)}</div>`).join('')}
  <div class="gi-btns"><button class="btn${isOpen(n.id,'bwd')?' on':''}" data-gd="bwd" ${i?'':'disabled'}>◀ ${i} incoming</button>
  <button class="btn${isOpen(n.id,'fwd')?' on':''}" data-gd="fwd" ${o?'':'disabled'}>${o} outgoing ▶</button>
  ${n.id!==G.center?'<button class="btn" id="giC">Center here</button>':''}<button class="btn" id="giT">Open as tree</button></div>`;
