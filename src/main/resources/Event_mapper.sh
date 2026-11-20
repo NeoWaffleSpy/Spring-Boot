@@ -515,6 +515,21 @@ function addUnres(rel, ln, sc, text) {
   nU++; Ufile[nU] = rel; Uline[nU] = ln; Uscope[nU] = sc; Utext[nU] = text
 }
 
+# source text of tokens a..b-1, spaced only between words (for unresolved node labels)
+function tokText(a, b,   out, x) {
+  out = ""
+  for (x = a; x < b; x++) out = out ((x > a && K[x] == "i" && K[x - 1] == "i") ? " " : "") T[x]
+  if (length(out) > 60) out = substr(out, 1, 57) "..."
+  return out
+}
+
+# end of the argument starting at token a (first comma outside brackets), at most b
+function argEnd(a, b,   x, d) {
+  d = 0
+  for (x = a; x < b; x++) { if (T[x] == "(" || T[x] == "[" || T[x] == "{") d++; else if (T[x] == ")" || T[x] == "]" || T[x] == "}") d--; else if (T[x] == "," && d == 0) return x }
+  return b
+}
+
 function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, recv, pi, ad) {
   t = T[i]; pi = i - 1
   if (T[pi] == ">") {   # explicit type arguments: recv.<List<Object>>name(...)
@@ -531,13 +546,17 @@ function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, 
   if (t in EMIT) {
     r = parseEv(i + 2, 0)
     if (r != "") { if (sc != "") { nEm++; Eev[nEm] = r; Escope[nEm] = sc; Efile[nEm] = rel; Eline[nEm] = L[i] } }
-    else if (inBody) addUnres(rel, L[i], sc, LN[L[i]])
+    else if (inBody) {
+      addUnres(rel, L[i], sc, LN[L[i]])
+      nUE++; UEsc[nUE] = sc; UEf[nUE] = rel; UEl[nUE] = L[i]; UEt[nUE] = tokText(i + 2, argEnd(i + 2, ce))
+    }
   }
   else if ((t in LISTEN) && sc != "") {
     r = parseEv(i + 2, 1)
     if (r != "") {
       j = evEnd + 2
       n = addListener(r, "site", sc, rel, L[i], fq, sc)
+      Lhx[n] = tokText(j, ce)
       q = j
       while (q < ce && (K[q] == "i" || T[q] == ".")) q++
       if (T[q] == "::" && K[q + 1] == "i" && q > j) { Lkind[n] = "ref"; Ltarget[n] = T[q - 1] LS T[q + 1] }
@@ -688,6 +707,11 @@ function addEvent(nm,   id) {
   if (!evFound && evRaw != "" && !(id in EVRAW)) EVRAW[id] = evRaw   # call right after normEv()
   return id
 }
+function unresHandler(n, txt,   id) {
+  id = "unres:h:" Lfile[n] ":" Lline[n] ":" n
+  addNode(id, "handler", (txt == "" ? "unknown handler" : txt), Lctx[n], Lfile[n], Lline[n]); UNR[id] = 1
+  return id
+}
 function nodeForScope(sid) {
   if (substr(sid, 1, 6) == "class:") return addClassNode(substr(sid, 7))
   if (sid in mFile) addMethodNode(sid)
@@ -734,7 +758,7 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
         ft = lookupField(Lctx[n], left)
         targets = methodsIn(classesFor(ft != "" ? ft : left, Lctx[n]), right)
       }
-      if (targets == "") addUnres(Lfile[n], Lline[n], Lscope[n], "listener handler not found: " left "::" right)
+      if (targets == "") { addUnres(Lfile[n], Lline[n], Lscope[n], "listener handler not found: " left "::" right); targets = unresHandler(n, left "::" right) }
     }
     else if (kind == "anon") targets = classCallbacks(tg)
     else if (kind == "class") {
@@ -749,9 +773,9 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
         ft = lookupField(Lctx[n], tg)
         if (ft != "") { list = classesFor(ft, Lctx[n]); nn = split(list, arr, LS); for (x = 1; x <= nn; x++) targets = targets LS classCallbacks(arr[x]); targets = substr(targets, 2) }
       }
-      if (targets == "") targets = nodeForScope(Lscope[n])
+      if (targets == "") targets = unresHandler(n, tg)
     }
-    else targets = nodeForScope(Lscope[n])
+    else targets = unresHandler(n, Lhx[n])
     nn = split(targets, arr, LS)
     for (x = 1; x <= nn; x++) {
       t2 = arr[x]; if (t2 == "") continue
@@ -763,6 +787,11 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
   for (n = 1; n <= nEm; n++) {
     eid = addEvent(normEv(Eev[n]))
     addEdge(nodeForScope(Escope[n]), eid, "emits", Efile[n], Eline[n], evAs)
+  }
+  for (n = 1; n <= nUE; n++) {
+    eid = "unres:e:" UEf[n] ":" UEl[n] ":" n
+    addNode(eid, "event", (UEt[n] == "" ? "unknown event" : UEt[n]), "", UEf[n], UEl[n]); UNR[eid] = 1
+    addEdge(nodeForScope(UEsc[n]), eid, "emits", UEf[n], UEl[n], "")
   }
   # calls
   for (c = 1; c <= nCalls; c++) {
@@ -802,12 +831,12 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     if (!(aid in NK)) continue
     AKA[aid] = AKA[aid] (AKA[aid] == "" ? "" : ",") "{\"name\":\"" jesc(Dname[i]) "\",\"to\":" (Dto[i] == "" ? "null" : "\"" jesc(Dto[i]) "\"") \
       ",\"file\":\"" jesc(Dfile[i]) "\",\"line\":" Dline[i] ",\"missing\":" ((Dto[i] != "" && !evFound) ? "true" : "false") "}"
-    if (Dto[i] != "" && !evFound) addUnres(Dfile[i], Dline[i], "", "alias target not found: " Dname[i] " = " Dto[i])
+    if (Dto[i] != "" && !evFound) { addUnres(Dfile[i], Dline[i], "", "alias target not found: " Dname[i] " = " Dto[i]); UNR[aid] = 1 }
     if (Dto[i] == "" && !(aid in EVLABEL)) { EVLABEL[aid] = Dname[i]; NFL[aid] = Dfile[i]; NLn[aid] = Dline[i] }
   }
   # events are named after the constant that holds their value (easier to find in an IDE than
   # the string); without one, after the reference used in the code, else the quoted string
-  for (id in NK) if (NK[id] == "event") {
+  for (id in NK) if (NK[id] == "event" && substr(id, 1, 6) != "unres:") {
     if (id in EVLABEL) NL[id] = EVLABEL[id]
     else if (id in EVRAW) NL[id] = EVRAW[id]
     else NL[id] = "\"" substr(id, 7) "\""
@@ -838,13 +867,13 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     }
     if (!((id in USED) || kind == "event" || kind == "endpoint")) continue
     CNT[kind]++
-    printf "%s{\"id\":\"%s\",\"kind\":\"%s\",\"label\":\"%s\",\"cls\":\"%s\",\"file\":%s,\"abs\":%s,\"line\":%s,\"roles\":[%s],\"path\":%s,\"verb\":%s,\"aka\":[%s],\"value\":%s}", \
+    printf "%s{\"id\":\"%s\",\"kind\":\"%s\",\"label\":\"%s\",\"cls\":\"%s\",\"file\":%s,\"abs\":%s,\"line\":%s,\"roles\":[%s],\"path\":%s,\"verb\":%s,\"aka\":[%s],\"value\":%s,\"unres\":%s}", \
       (first ? "" : ","), jesc(id), kind, jesc(NL[id]), jesc(NC[id]), \
       (NFL[id] == "" ? "null" : "\"" jesc(NFL[id]) "\""), \
       (NFL[id] == "" ? "null" : "\"" jesc(root "/" NFL[id]) "\""), \
       (NLn[id] == "" ? "null" : NLn[id]), roles, \
       ((id in mPath) ? "\"" jesc(mPath[id]) "\"" : "null"), \
-      (((id in mVerb) && mVerb[id] != "") ? "\"" mVerb[id] "\"" : "null"), AKA[id], (kind == "event" ? "\"" jesc(substr(id, 7)) "\"" : "null") > outfile
+      (((id in mVerb) && mVerb[id] != "") ? "\"" mVerb[id] "\"" : "null"), AKA[id], ((kind == "event" && substr(id, 1, 6) != "unres:") ? "\"" jesc(substr(id, 7)) "\"" : "null"), ((id in UNR) ? "true" : "false") > outfile
     first = 0
   }
   printf "],\"unresolved\":[" > outfile
@@ -951,9 +980,13 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .gmore{cursor:pointer}.gmore rect{fill:var(--panel);stroke:var(--mute);stroke-dasharray:3 3}.gmore text{fill:var(--mute);font-size:12px;text-anchor:middle}.gmore:hover rect{stroke:var(--acc)}
 #ghead .title .gsel{color:var(--acc)}#ghead .loc{min-height:18px}
 .own{display:block;font-size:11px;font-weight:400;color:var(--mute);word-break:break-all;line-height:1.3}h2 .own{font-size:12px}
-.glegend{display:flex;gap:6px 24px;flex-wrap:wrap;justify-content:space-between;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend>div{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.glegend span{white-space:nowrap}.glegend i{display:inline-block;width:22px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
+.glegend{display:flex;gap:6px 24px;flex-wrap:wrap;justify-content:space-between;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend>div{display:flex;gap:8px 10px;flex-wrap:wrap;align-items:center}.glegend span{white-space:nowrap}.glegend i{display:inline-block;width:16px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
 @media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}#detail.gview{display:block}#gwrap{height:65vh}}
 .h1sub{font-weight:400;color:var(--mute)}
+.badge.unrb{color:var(--warn)}#results li.unr>div>div:first-child,.nm.unr{color:var(--warn)}
+.gn.unr .box{stroke:var(--warn);stroke-dasharray:6 3;fill:color-mix(in srgb,var(--warn) 9%,var(--panel))}.gn.unr:hover .box,.gn.unr.ctr .box,.gn.unr.foc .box{fill:color-mix(in srgb,var(--warn) 14%,var(--hi))}
+.gn.unr text,.gn.unr text.ki{fill:var(--warn)}.gn.unr text.gp,.gn.unr text.gs{fill:color-mix(in srgb,var(--warn) 70%,var(--mute))}
+.unrl rect{fill:color-mix(in srgb,var(--warn) 9%,var(--panel));stroke:var(--warn);stroke-dasharray:4 2;stroke-width:1.4}.unrl svg{vertical-align:middle;margin-right:4px}
 .sptag{display:inline-block;flex:none;align-self:center;font-size:10.5px;font-weight:600;line-height:1.5;padding:0 7px;border-radius:9px;color:var(--sp);background:color-mix(in srgb,var(--sp) 14%,transparent);white-space:nowrap;vertical-align:middle;font-family:system-ui,sans-serif}
 #results li.sp{background:color-mix(in srgb,var(--sp) 8%,transparent);box-shadow:inset 3px 0 0 color-mix(in srgb,var(--sp) 70%,transparent)}
 #results li.sp:hover,#results li.sp.sel{background:color-mix(in srgb,var(--sp) 8%,var(--hi))}#results li .sptag{margin-left:auto}
@@ -1017,8 +1050,10 @@ const SPN=new Map();
 function spOf(n){if(!n||!n.file||!SP.size)return null;if(SPN.has(n.id))return SPN.get(n.id);
  const parts=n.file.split('/').slice(0,-1);let r=null;for(const d of parts)if(SP.has(d)){r={name:d,i:SP.get(d).i};break;}
  SPN.set(n.id,r);return r;}
+function unrTag(n){return n.unres?'<span class="badge unrb" title="Not resolved by the scan: check by hand">unresolved</span>':'';}
 function spTag(n){const sp=spOf(n);return sp?`<span class="sptag" style="--sp:var(--sp${sp.i})" title="From the ${esc(sp.name)}/ folder">${esc(sp.name)}</span>`:'';}
-function sub(n){if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;
+function sub(n){if(n.unres&&n.id.startsWith('unres:'))return (n.kind==='event'?'event name not known statically':'handler not found')+(n.file?' · '+n.file.split('/').pop()+':'+n.line:'');
+ if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;
  if(n.kind==='event'){const e=(IN.get(n.id)||[]).filter(x=>x.k==='emits').length,h=(OUT.get(n.id)||[]).length;
   return `${n.value!=null&&!(n.label||'').startsWith('"')?'"'+n.value+'" · ':''}${e} emitter(s) · ${h} listener(s)`;}
  // the class is left out when the name already starts with it (Listeners.mail() / demo.Listeners)
@@ -1031,7 +1066,7 @@ function renderList(){const toks=$('#q').value.toLowerCase().split(/\s+/).filter
  let r=DATA.nodes.filter(n=>enabled.has(n.kind)&&toks.every(t=>hay.get(n.id).includes(t)));
  r.sort((a,b)=>ORDER.indexOf(a.kind)-ORDER.indexOf(b.kind)||a.label.localeCompare(b.label));
  $('#count').textContent=r.length+' result(s)'+(r.length>400?' – showing 400':'');
- $('#results').innerHTML=r.slice(0,400).map(n=>{const sp=spOf(n);return `<li data-id="${esc(n.id)}" class="${n.id===selected?'sel':''}${sp?' sp':''}"${sp?` style="--sp:var(--sp${sp.i})"`:''}>${ic(n)}<div><div>${nameHtml(n)}</div><div class="sub">${esc(sub(n))}</div></div>${spTag(n)}</li>`;}).join('');}
+ $('#results').innerHTML=r.slice(0,400).map(n=>{const sp=spOf(n);return `<li data-id="${esc(n.id)}" class="${n.id===selected?'sel':''}${sp?' sp':''}${n.unres?' unr':''}"${sp?` style="--sp:var(--sp${sp.i})"`:''}>${ic(n)}<div><div>${nameHtml(n)}</div><div class="sub">${esc(sub(n))}</div></div>${spTag(n)}</li>`;}).join('');}
 $('#results').onclick=e=>{const li=e.target.closest('li');if(li)go(li.dataset.id);};
 $('#q').oninput=renderList;
 document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('#q')){e.preventDefault();$('#q').focus();$('#q').select();}});
@@ -1043,7 +1078,7 @@ let dir='fwd',maxDepth=8;
 function select(id){selected=id;const n=N.get(id);renderList();
  if(view==='graph'){drawGraph(null,true);return;}
  const roles=(n.roles||[]).filter(r=>r!==n.kind).map(r=>`<span class="badge k-${r}">${r}</span>`).join(' ');
- $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${spTag(n)}${roles}</div>
+ $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${roles}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
  <div class="toolbar"><button class="btn" data-d="fwd">Trace forward ▶</button><button class="btn" data-d="bwd">◀ Trace back</button>
  <span class="sub">depth</span><select id="depth">${[2,3,4,6,8,12,20].map(d=>`<option ${d===maxDepth?'selected':''}>${d}</option>`).join('')}</select>
@@ -1077,7 +1112,7 @@ function drawTree(){document.querySelectorAll('[data-d]').forEach(b=>b.classList
  const t=$('#tree');t.innerHTML='';fill(t,selected,0,new Set([selected]));if(!t.children.length)t.innerHTML='<li class="sub">Nothing found in this direction.</li>';}
 function fill(ul,id,depth,path){for(const e of nextOf(id,dir)){const n=N.get(e.id);if(!n)continue;const li=document.createElement('li');
  const lab=(dir==='fwd'?FWD:BWD)[e.k]+(e.via?' (via calls)':'');
- const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span>${spTag(n)}${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
+ const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm${n.unres?' unr':''}" data-id="${esc(n.id)}">${nameHtml(n)}</span>${spTag(n)}${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
  const kids=nextOf(e.id,dir);
  if(path.has(e.id)){li.className='leaf';li.innerHTML=row+' <span class="cyc">↻ cycle</span>';}
  else if(!kids.length){li.className='leaf';li.innerHTML=row;}
@@ -1090,7 +1125,7 @@ const ABS=new Map(DATA.nodes.filter(n=>n.file).map(n=>[n.file,n.abs]));function 
 function expandAll(root,budget){let opened=0;const step=()=>{const closed=[...root.querySelectorAll('details:not([open])')];if(!closed.length||opened>1500)return;
  closed.forEach(d=>{d.open=true;opened++;});setTimeout(step,0);};step();}
 $('#detail').addEventListener('click',e=>{const x=e.target.closest('.nm');if(x){e.preventDefault();go(x.dataset.id);}});
-function drawDirect(n){const rows=(list,lbl)=>list.map(e=>{const m=N.get(e.id);return m?`<tr><td>${esc(lbl[e.k])}${asTag(e)}</td><td><span class="row">${ic(m)}<span class="nm" data-id="${esc(m.id)}">${nameHtml(m)}</span>${spTag(m)}</span></td><td>${link(e.f,absOf(e.f),e.l)}</td></tr>`:''}).join('');
+function drawDirect(n){const rows=(list,lbl)=>list.map(e=>{const m=N.get(e.id);return m?`<tr><td>${esc(lbl[e.k])}${asTag(e)}</td><td><span class="row">${ic(m)}<span class="nm${m.unres?' unr':''}" data-id="${esc(m.id)}">${nameHtml(m)}</span>${spTag(m)}</span></td><td>${link(e.f,absOf(e.f),e.l)}</td></tr>`:''}).join('');
  const o=OUT.get(n.id)||[],i=IN.get(n.id)||[];
  $('#direct').innerHTML=`<h3>Direct links</h3><table><tr><th>Relation</th><th>Item</th><th>Where</th></tr>${rows(i,BWD)}${rows(o,FWD)||''}${!o.length&&!i.length?'<tr><td colspan=3 class="sub">none</td></tr>':''}</table>`;}
 function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][1]}: ${n.label}${n.path?' ['+(n.verb||'')+' '+n.path+']':''}  (${n.file||''}:${n.line||''})`);
@@ -1139,7 +1174,7 @@ function wrap(s,c,w,max){if(tw(s,c)<=w)return [s];const out=[];let cur='';
  if(out.length>max){const rest=out.slice(max-1).join('');out.length=max-1;out.push(rest);}
  return out.map(l=>ell(l,c,w));}
 // "Owner.member(...)" -> ["Owner", "member(...)"]; a quoted event value stays whole
-function splitName(n){const L=n.label||'';if(L.startsWith('"')||n.kind==='lambda')return [null,L];
+function splitName(n){const L=n.label||'';if(L.startsWith('"')||n.kind==='lambda'||(n.unres&&n.id.startsWith('unres:')))return [null,L];
  const p=L.indexOf('('),head=p<0?L:L.slice(0,p),cut=Math.max(head.lastIndexOf('.'),head.lastIndexOf('#'),head.lastIndexOf('::'));
  if(cut<=0)return [null,L];const sep=head.startsWith('::',cut)?2:1;return [L.slice(0,cut),L.slice(cut+sep)];}
 function gSpec(n){const [own,mem]=splitName(n),al=aliasesOf(n),L=[];
@@ -1189,7 +1224,7 @@ function edgePath(a,b){const ax=a.x+a.w/2,bx=b.x-b.w/2;
  if(ax2>bx2+10){const m=(ax2+bx2)/2;return `M${ax2},${a.y}C${m},${a.y} ${m},${b.y} ${bx2},${b.y}`;}
  const y=Math.max(a.y+a.h/2,b.y+b.h/2)+28;return `M${a.x},${a.y+a.h/2}C${a.x},${y} ${b.x},${y} ${b.x},${b.y+b.h/2}`;}
 function gShell(){const n=N.get(G.center);
- const shapes=ORDER.map(k=>`<span><svg width="28" height="14"><path class="s-${k}" d="${shapeD(k,28,14)}" style="fill:var(--panel);stroke-width:1.4"/>${k==='class'?`<path class="s-class" transform="translate(2,2)" d="${shapeD(k,24,10)}" style="fill:none;stroke-width:1"/>`:''}</svg>${KIND[k][1]}</span>`).join('');
+ const shapes=ORDER.map(k=>`<span><svg width="20" height="13"><path class="s-${k}" d="${shapeD(k,20,13)}" style="fill:var(--panel);stroke-width:1.4"/>${k==='class'?`<path class="s-class" transform="translate(2,2)" d="${shapeD(k,16,9)}" style="fill:none;stroke-width:1"/>`:''}</svg>${KIND[k][1]}</span>`).join('');
  $('#detail').innerHTML=`<div id="ghead"></div>
  <div class="toolbar"><button class="btn" id="gExpB" title="Open the incoming links of every node shown">◀ Expand all</button><button class="btn" id="gExpF" title="Open the outgoing links of every node shown">Expand all ▶</button>
  <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button>
@@ -1197,7 +1232,7 @@ function gShell(){const n=N.get(G.center);
  <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
  <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
   `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
- <div class="glegend"><div>${shapes}${[...SP].map(([d,o])=>`<span class="sptag" style="--sp:var(--sp${o.i})">${esc(d)}</span>`).join('')}</div><div><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
+ <div class="glegend"><div>${shapes}<span class="unrl"><svg width="20" height="13"><rect x="1" y="1" width="18" height="11" rx="3"/></svg>unresolved</span>${[...SP].map(([d,o])=>`<span class="sptag" style="--sp:var(--sp${o.i})">${esc(d)}</span>`).join('')}</div><div><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
  <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span><span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div></div>`;
  const expandAll=d=>{for(const id of G.pos.keys())if(N.has(id)&&uniqNext(id,d).length)G.open.add(id+'|'+d);drawGraph(null,true);};
  $('#gExpB').onclick=()=>expandAll('bwd');$('#gExpF').onclick=()=>expandAll('fwd');
@@ -1257,7 +1292,7 @@ function drawGraph(anchor,fit){
   const tip=`${KIND[n.kind][1]}: ${n.label}${n.value!=null?'\n"'+n.value+'"':''}${n.path?'\n'+(n.verb||'')+' '+n.path:''}${n.cls?'\n'+n.cls:''}${n.file?'\n'+n.file+':'+n.line:''}\n${nin} incoming · ${nout} outgoing`;
   const sp=spOf(n),tw2=sp?Math.ceil(tw(sp.name,'gsp'))+12:0;
   const spg=sp?`<g class="gsp" transform="translate(${w-tw2-pad-6},${h-7})"><rect width="${tw2}" height="14" rx="7"/><text x="${tw2/2}" y="10">${esc(sp.name)}</text></g>`:'';
-  nodes.push(`<g class="gn${id===G.center?' ctr':''}${sp?' sp':''}"${sp?` style="--sp:var(--sp${sp.i})"`:''} data-id="${esc(id)}" transform="translate(${p.x-w/2},${p.y-h/2})"><title>${esc(tip+(sp?'\nFrom the '+sp.name+'/ folder':''))}</title>
+  nodes.push(`<g class="gn${id===G.center?' ctr':''}${sp?' sp':''}${n.unres?' unr':''}"${sp?` style="--sp:var(--sp${sp.i})"`:''} data-id="${esc(id)}" transform="translate(${p.x-w/2},${p.y-h/2})"><title>${esc((n.unres?'UNRESOLVED: '+(n.kind==='event'?'event name not known statically':n.kind==='handler'?'handler not found':'')+'\n':'')+tip+(sp?'\nFrom the '+sp.name+'/ folder':''))}</title>
    <path class="box s-${n.kind}" d="${shapeD(n.kind,w,h)}"/>${n.kind==='class'?`<path class="box2 s-class" transform="translate(3,3)" d="${shapeD('class',w-6,h-6)}"/>`:''}
    <text class="ki f-${n.kind}" x="${pad}" y="${h/2+5}">${KIND[n.kind][0]}</text>${txt}${spg}${gBadge(id,'bwd',pos,w)}${gBadge(id,'fwd',pos,w)}</g>`);}
  $('#gvp').innerHTML=edges.join('')+nodes.join('')+labels.join('');
@@ -1273,7 +1308,7 @@ function gHighlight(){const vp=$('#gvp');if(!vp)return;vp.querySelectorAll('.hl,
 // the top of the graph view describes the selected node, or the center when nothing is selected
 function gInfo(){const box=$('#ghead');if(!box)return;const n=N.get(G.focus||G.center),sel=!!G.focus&&G.focus!==G.center;
  const al=aliasesOf(n);
- box.innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${spTag(n)}${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
+ box.innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}${al.length?` · <span class="alias" title="${esc(al.map(a=>a.name+' = '+a.to+(a.missing?' (target not found)':'')).join(' · '))}">≡ ${esc(al.map(a=>short(a.name)).join(', '))}</span>`:''}</div>`;}
 // "ClassName.member" on two lines: the owner small and grey above, the member below
 function nameHtml(n){const [own,mem]=splitName(n);return twoLines(own,mem);}
@@ -1292,7 +1327,7 @@ $('#tIssues').onclick=()=>{setView('issues');drawIssues();};
 function drawIssues(){const ev=DATA.nodes.filter(n=>n.kind==='event');
  const noL=ev.filter(n=>!(OUT.get(n.id)||[]).length),noE=ev.filter(n=>!(IN.get(n.id)||[]).some(e=>e.k==='emits'));
  const deadEp=DATA.nodes.filter(n=>n.kind==='endpoint'&&!(OUT.get(n.id)||[]).length);
- const lst=a=>a.length?`<table>${a.map(n=>`<tr><td><span class="row">${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span>${spTag(n)}</span></td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`).join('')}</table>`:'<div class="sub">none 🎉</div>';
+ const lst=a=>a.length?`<table>${a.map(n=>`<tr><td><span class="row">${ic(n)}<span class="nm${n.unres?' unr':''}" data-id="${esc(n.id)}">${nameHtml(n)}</span>${spTag(n)}</span></td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`).join('')}</table>`:'<div class="sub">none 🎉</div>';
  $('#detail').innerHTML=`<div class="title"><h2>Issues & blind spots</h2></div>
  <div class="section"><h3>Events emitted but never listened to (${noL.length})</h3>${lst(noL)}</div>
  <div class="section"><h3>Events listened to but never emitted (${noE.length})</h3><div class="help">Often emitted with a dynamic name — check "unresolved" below.</div>${lst(noE)}</div>
