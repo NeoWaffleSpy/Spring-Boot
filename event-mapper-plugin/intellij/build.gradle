@@ -1,0 +1,27 @@
+plugins {
+    // 1.x line: the 2.x IntelliJ Platform Gradle plugin only supports IDEs from 2022.3 on
+    id 'org.jetbrains.intellij' version '1.17.4'
+}
+
+dependencies {
+    // bundled into the plugin's lib/ folder by buildPlugin
+    implementation project(':core')
+}
+
+// The IDE the plugin is compiled against (and that `runIde` starts)
+intellij {
+    pluginName = 'event-mapper'     // zip and sandbox folder name
+    version = '2022.2.4'
+    type = 'IC'                     // Community; Ultimate can load the plugin too
+    plugins = ['com.intellij.java'] // Java code model (PSI) and indexes
+}
+
+patchPluginXml {
+    sinceBuild = '222'   // 2022.2
+    untilBuild = '241.*' // up to 2024.1, the last line that runs plugins on Java 17
+}
+
+// Not needed for a plugin without settings pages, and it slows the build down a lot
+buildSearchableOptions {
+    enabled = false
+}

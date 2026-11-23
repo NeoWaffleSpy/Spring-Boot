@@ -1,0 +1,6 @@
+rootProject.name = 'event-mapper-plugin'
+
+// core:     the analysis, with no IDE dependency (graph model, rules, JSON output)
+// intellij: the IntelliJ plugin, an adapter from the IDE's code model (PSI) to core
+// An Eclipse plugin will be a second adapter on the same core (see README.md).
+include 'core', 'intellij'
