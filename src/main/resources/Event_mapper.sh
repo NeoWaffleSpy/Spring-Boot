@@ -45,6 +45,12 @@ EVENT_ANNOTATION_KEYS="value event events topic topics name"
 # Annotations that mark an endpoint, as Name=VERB (ANY = no fixed verb).
 ENDPOINT_ANNOTATIONS="GetMapping=GET PostMapping=POST PutMapping=PUT DeleteMapping=DELETE PatchMapping=PATCH RequestMapping=ANY GET=GET POST=POST PUT=PUT DELETE=DELETE PATCH=PATCH"
 
+# Method names that register an endpoint at run time, called as
+#   router.addRoute(HttpMethod.POST, endpointName, (o, event) -> { ... })
+# (verb, name, handler: a lambda, this::m / Foo::m, or anything else -> unresolved).
+# Each call becomes an endpoint named "Lambda <method that registers it>".
+ROUTE_METHODS="addRoute"
+
 # Annotations whose first string is a URL path (class-level = prefix).
 PATH_ANNOTATIONS="RequestMapping Path"
 
@@ -126,6 +132,7 @@ BEGIN {
   nw = split(ev_keys, w, " ");        for (i = 1; i <= nw; i++) EVKEY[w[i]] = 1
   nw = split(path_ann, w, " ");       for (i = 1; i <= nw; i++) PATHANN[w[i]] = 1
   nCB = split(callback_methods, CBL, " ")
+  nw = split(route_methods, w, " ");  for (i = 1; i <= nw; i++) ROUTE[w[i]] = 1
   nw = split(endpoint_ann, w, " ")
   for (i = 1; i <= nw; i++) { p = index(w[i], "="); if (p) EPANN[substr(w[i], 1, p - 1)] = substr(w[i], p + 1); else EPANN[w[i]] = "ANY" }
   FOLLOW = (follow_calls + 0 != 0)
@@ -518,7 +525,7 @@ function addUnres(rel, ln, sc, text) {
 # source text of tokens a..b-1, spaced only between words (for unresolved node labels)
 function tokText(a, b,   out, x) {
   out = ""
-  for (x = a; x < b; x++) out = out ((x > a && K[x] == "i" && K[x - 1] == "i") ? " " : "") T[x]
+  for (x = a; x < b; x++) out = out ((x > a && K[x] == "i" && K[x - 1] == "i") ? " " : "") (K[x] == "s" ? "\"" T[x] "\"" : T[x])
   if (length(out) > 60) out = substr(out, 1, 57) "..."
   return out
 }
@@ -528,6 +535,31 @@ function argEnd(a, b,   x, d) {
   d = 0
   for (x = a; x < b; x++) { if (T[x] == "(" || T[x] == "[" || T[x] == "{") d++; else if (T[x] == ")" || T[x] == "]" || T[x] == "}") d--; else if (T[x] == "," && d == 0) return x }
   return b
+}
+
+# router.addRoute(VERB, name, handler): an endpoint "Lambda <registering method>" that calls
+# the handler (a lambda node, a method reference, or an unresolved handler)
+function routeCall(i, rel, sc, fq, ce,   a1, e1, a2, e2, a3, a, rid, own, verb, path, lid, q) {
+  a1 = i + 2; e1 = argEnd(a1, ce); if (e1 >= ce) return
+  a2 = e1 + 1; e2 = argEnd(a2, ce); if (e2 >= ce) return
+  a3 = e2 + 1
+  verb = T[e1 - 1]; if (verb !~ /^[A-Z]+$/) verb = "ANY"
+  path = (e2 == a2 + 1 && K[a2] == "s") ? T[a2] : "{" tokText(a2, e2) "}"
+  own = (sc in mName) ? mName[sc] : sc; sub(/^class:/, "", own); sub(/.*\./, "", own)
+  rid = "route:" rel ":" L[i] ":" i
+  nRt++; Rid[nRt] = rid; Rlabel[nRt] = "Lambda " own; Rfq[nRt] = fq; Rfile[nRt] = rel; Rline[nRt] = L[i]
+  Rverb[nRt] = verb; Rpath[nRt] = path; Rkind[nRt] = "unres"; Rtxt[nRt] = tokText(a3, ce)
+  for (a = a3; a < ce; a++) if (T[a] == "->") break
+  if (a < ce) {
+    lid = sc; sub(/^class:/, "", lid); lid = lid "$\316\273L" L[a]
+    lamFile[lid] = rel; lamLine[lid] = L[a]; lamFq[lid] = fq; lamParent[lid] = sc; lamOrd[++nLam] = lid
+    if (T[a + 1] == "{") pendLam[a + 1] = lid
+    else { exprId[a] = lid; exprEnd[a] = ce }
+    Rkind[nRt] = "lambda"; Rtarget[nRt] = lid
+    return
+  }
+  q = a3; while (q < ce && (K[q] == "i" || T[q] == ".")) q++
+  if (T[q] == "::" && K[q + 1] == "i" && q > a3 && q + 2 == ce) { Rkind[nRt] = "ref"; Rtarget[nRt] = T[q - 1] LS T[q + 1] }
 }
 
 function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, recv, pi, ad) {
@@ -551,6 +583,7 @@ function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, 
       nUE++; UEsc[nUE] = sc; UEf[nUE] = rel; UEl[nUE] = L[i]; UEt[nUE] = tokText(i + 2, argEnd(i + 2, ce))
     }
   }
+  else if ((t in ROUTE) && sc != "") routeCall(i, rel, sc, fq, ce)
   else if ((t in LISTEN) && sc != "") {
     r = parseEv(i + 2, 1)
     if (r != "") {
@@ -733,7 +766,7 @@ function scopeLabel(sid) {
 }
 
 function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, right, ft, list, t2, c, recv, nm, cls,
-                            key, ep, s, d, qh, qt, cur, id, first, roles, rr, nr, i, lid, kk, evUsed, v, aid) {
+                            key, ep, s, d, qh, qt, cur, id, first, roles, rr, nr, i, lid, kk, evUsed, v, aid, rid) {
   # lambdas
   for (i = 1; i <= nLam; i++) {
     lid = lamOrd[i]
@@ -788,6 +821,24 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     eid = addEvent(normEv(Eev[n]))
     addEdge(nodeForScope(Escope[n]), eid, "emits", Efile[n], Eline[n], evAs)
   }
+  for (n = 1; n <= nRt; n++) {
+    rid = Rid[n]
+    addNode(rid, "endpoint", Rlabel[n], Rfq[n], Rfile[n], Rline[n]); mVerb[rid] = Rverb[n]; mPath[rid] = Rpath[n]; ROUTEN[rid] = 1
+    targets = ""
+    if (Rkind[n] == "lambda") targets = Rtarget[n]
+    else if (Rkind[n] == "ref") {
+      split(Rtarget[n], pr, LS); left = pr[1]; right = pr[2]
+      if (left == "this" || left == "super") targets = lookupMethod(Rfq[n], right, 0)
+      else { ft = lookupField(Rfq[n], left); targets = methodsIn(classesFor(ft != "" ? ft : left, Rfq[n]), right) }
+    }
+    if (targets == "") {
+      addUnres(Rfile[n], Rline[n], "", "route handler not found: " Rtxt[n])
+      targets = "unres:h:" Rfile[n] ":" Rline[n] ":r" n
+      addNode(targets, "handler", (Rtxt[n] == "" ? "unknown handler" : Rtxt[n]), Rfq[n], Rfile[n], Rline[n]); UNR[targets] = 1
+    }
+    nn = split(targets, arr, LS)
+    for (x = 1; x <= nn; x++) { if (arr[x] in mFile) addMethodNode(arr[x]); addEdge(rid, arr[x], "calls", Rfile[n], Rline[n]) }
+  }
   for (n = 1; n <= nUE; n++) {
     eid = "unres:e:" UEf[n] ":" UEl[n] ":" n
     addNode(eid, "event", (UEt[n] == "" ? "unknown event" : UEt[n]), "", UEf[n], UEl[n]); UNR[eid] = 1
@@ -812,7 +863,7 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     if (d in REV) REV[d] = REV[d] LS s; else REV[d] = s
     if (ep[3] == "handled_by") KEEP[d] = 1
   }
-  for (id in NK) if (NK[id] == "event" || NK[id] == "lambda" || ((id in mFile) && mRoles[id] != "")) KEEP[id] = 1
+  for (id in NK) if (NK[id] == "event" || NK[id] == "lambda" || (id in ROUTEN) || (id in UNR) || ((id in mFile) && mRoles[id] != "")) KEEP[id] = 1
   qh = 1; qt = 0
   for (id in NK) if (NK[id] == "event") { Q[++qt] = id; REACH[id] = 1 }
   while (qh <= qt) {
@@ -865,6 +916,7 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
       if (index(mRoles[id], "endpoint")) kind = "endpoint"
       else if (index(mRoles[id], "handler")) kind = "handler"
     }
+    if (id in ROUTEN) roles = "\"lambda\""
     if (!((id in USED) || kind == "event" || kind == "endpoint")) continue
     CNT[kind]++
     printf "%s{\"id\":\"%s\",\"kind\":\"%s\",\"label\":\"%s\",\"cls\":\"%s\",\"file\":%s,\"abs\":%s,\"line\":%s,\"roles\":[%s],\"path\":%s,\"verb\":%s,\"aka\":[%s],\"value\":%s,\"unres\":%s}", \
@@ -907,7 +959,7 @@ EOF_AWK
   -v emit_methods="$EMIT_METHODS" -v listen_methods="$LISTEN_METHODS" \
   -v listen_ann="$LISTEN_ANNOTATIONS" -v ev_keys="$EVENT_ANNOTATION_KEYS" \
   -v endpoint_ann="$ENDPOINT_ANNOTATIONS" -v path_ann="$PATH_ANNOTATIONS" \
-  -v callback_methods="$CALLBACK_METHODS" -v follow_calls="$FOLLOW_CALLS" \
+  -v callback_methods="$CALLBACK_METHODS" -v route_methods="$ROUTE_METHODS" -v follow_calls="$FOLLOW_CALLS" \
   "$AWK_PROG")
 
 # ---- assemble the HTML ---------------------------------------------------------
