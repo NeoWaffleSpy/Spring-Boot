@@ -1519,24 +1519,58 @@ function drawConn(){const links=connLinks();
  <div class="glegend"><div><span class="cbox">▣</span>component<span><svg width="20" height="13"><path class="s-endpoint" d="${shapeD('endpoint',20,13)}" style="fill:var(--panel);stroke-width:1.4"/></svg>endpoint</span></div>
  <div><span><i style="border-color:var(--hd)"></i>event handled in another component</span><span><i style="border-color:var(--ep);border-top-style:dashed"></i>HTTP call</span></div></div>`;
  if(!links.length){$('#gwrap').innerHTML='<div class="empty">No link between components found.</div>';return;}
- // layout: one box per component on a grid, its items stacked inside
+ // layout: components flow left to right. Each component gets a column from the links between
+ // components (callers before the components they reach; cycles broken), boxes in a column and
+ // items in a box are then ordered by the height of what they link to (a few barycenter passes),
+ // so most links run left to right without crossing.
  const IW=n=>Math.max(tw(splitName(n)[1]||n.label,'gm'),tw(connSub(n),'gp'))+54;
- const box=new Map();
+ const box=new Map(),cOut=new Map(),cIn=new Map(),nb=new Map();
  for(const c of comps){const ids=[...items.get(c)].sort((a,b)=>{const x=N.get(a),y=N.get(b);return (x.kind==='endpoint'?0:1)-(y.kind==='endpoint'?0:1)||x.label.localeCompare(y.label);});
-  const w=Math.min(380,Math.max(220,tw(c,'gm')+60,...ids.map(id=>IW(N.get(id))+24)));box.set(c,{ids,w,h:40+ids.length*46});}
- const ncol=Math.min(4,Math.ceil(Math.sqrt(comps.length))),CG=150,RG=70,colW=[],rowH=[];
- comps.forEach((c,i)=>{const b=box.get(c),col=i%ncol,row=Math.floor(i/ncol);b.col=col;b.row=row;colW[col]=Math.max(colW[col]||0,b.w);rowH[row]=Math.max(rowH[row]||0,b.h);});
- const cx=[0],ry=[0];for(let i=1;i<colW.length;i++)cx[i]=cx[i-1]+colW[i-1]+CG;for(let i=1;i<rowH.length;i++)ry[i]=ry[i-1]+rowH[i-1]+RG;
- const pos=new Map(),out=[];
- for(const c of comps){const b=box.get(c);b.x=cx[b.col]+(colW[b.col]-b.w)/2;b.y=ry[b.row];
-  out.push(`<g class="cbx"><rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="12"/><text class="cbt" x="${b.x+14}" y="${b.y+22}">▣ ${esc(c)}</text></g>`);
-  b.ids.forEach((id,i)=>pos.set(id,{x:b.x+12,y:b.y+36+i*46,w:b.w-24,h:38,b}));}
- // links, from the side facing the target (same column: both on the right, bulging out)
+  const w=Math.min(380,Math.max(220,tw(c,'gm')+60,...ids.map(id=>IW(N.get(id))+24)));box.set(c,{c,ids,w,h:40+ids.length*46});cOut.set(c,new Map());cIn.set(c,new Map());}
+ const bump=(m,k)=>m.set(k,(m.get(k)||0)+1);
+ for(const l of links){const a=compOf(N.get(l.from)),z=compOf(N.get(l.to));if(a===z)continue;bump(cOut.get(a),z);bump(cIn.get(z),a);
+  (nb.get(l.from)||nb.set(l.from,[]).get(l.from)).push(l.to);(nb.get(l.to)||nb.set(l.to,[]).get(l.to)).push(l.from);}
+ // drop back edges (depth-first, sources first), then rank = longest path from a source
+ const st=new Map(),fwd=new Map(comps.map(c=>[c,[]]));
+ const order=[...comps].sort((a,b)=>(cIn.get(a).size-cOut.get(a).size)-(cIn.get(b).size-cOut.get(b).size)||a.localeCompare(b));
+ const dfs=c=>{st.set(c,1);for(const z of [...cOut.get(c).keys()].sort()){if(st.get(z)===1)continue;fwd.get(c).push(z);if(!st.has(z))dfs(z);}st.set(c,2);};
+ for(const c of order)if(!st.has(c))dfs(c);
+ const rank=new Map(comps.map(c=>[c,0]));
+ for(let it=0;it<comps.length;it++)for(const c of comps)for(const z of fwd.get(c))if(rank.get(z)<rank.get(c)+1)rank.set(z,rank.get(c)+1);
+ const cols=[];for(const c of order){const r=rank.get(c);(cols[r]||(cols[r]=[])).push(box.get(c));}
+ for(let i=0;i<cols.length;i++)if(!cols[i])cols[i]=[];
+ const CG=170,BG=46,colX=[];let x=0;
+ for(const col of cols){const w=Math.max(220,...col.map(b=>b.w));colX.push(x);col.forEach(b=>b.cw=w);x+=w+CG;}
+ const place=()=>{const hs=cols.map(col=>col.reduce((s,b)=>s+b.h,0)+BG*Math.max(0,col.length-1)),H=Math.max(...hs);
+  cols.forEach((col,i)=>{let y=(H-hs[i])/2;for(const b of col){b.col=i;b.x=colX[i]+(b.cw-b.w)/2;b.y=y;y+=b.h+BG;b.ids.forEach((id,k)=>pos.set(id,{x:b.x+12,y:b.y+36+k*46,w:b.w-24,h:38,b}));}});};
+ const pos=new Map();place();
+ const mean=ids=>{let s=0,n=0;for(const id of ids)for(const o of nb.get(id)||[]){const q=pos.get(o);if(q){s+=q.y;n++;}}return n?s/n:null;};
+ for(let pass=0;pass<6;pass++){
+  for(const col of cols){
+   for(const b of col){const ky=new Map(b.ids.map((id,k)=>[id,mean([id])??(b.y+36+k*46)]));b.ids.sort((p,q)=>ky.get(p)-ky.get(q));}
+   const ky=new Map(col.map(b=>[b,mean(b.ids)??b.y]));col.sort((p,q)=>ky.get(p)-ky.get(q));place();}}
+ const out=[];
+ for(const col of cols)for(const b of col)out.push(`<g class="cbx"><rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="12"/><text class="cbt" x="${b.x+14}" y="${b.y+22}">▣ ${esc(b.c)}</text></g>`);
+ // links leave from the side facing the target and enter on the side facing the source; a link
+ // spanning several columns crosses each column in between through a free gap (between or around
+ // its boxes, a few px apart per link) instead of over the boxes. Same column: both on the right.
+ const used=new Map();
+ const gapY=(ci,t)=>{const col=cols[ci],iv=[];let top=-1e9;
+  for(const b of col){iv.push([top,b.y-12]);top=b.y+b.h+12;}iv.push([top,1e9]);
+  let best=null;for(const [lo,hi] of iv){if(hi-lo<8)continue;const y=Math.min(hi,Math.max(lo,t)),d=Math.abs(y-t);if(!best||d<best.d)best={y,d,lo,hi};}
+  const u=used.get(ci)||used.set(ci,[]).get(ci);let y=best.y,k=0;
+  while(u.some(v=>Math.abs(v-y)<7)&&k<40){k++;const s=Math.ceil(k/2)*7*(k%2?1:-1),c=best.y+s;if(c>=best.lo&&c<=best.hi)y=c;}
+  u.push(y);return y;};
+ const seg=(px,py,qx,qy)=>{const m=(qx-px)/2;return `C${px+m},${py} ${qx-m},${qy} ${qx},${qy}`;};
  const edges=[];
  for(const l of links){const a=pos.get(l.from),z=pos.get(l.to);if(!a||!z)continue;const ay=a.y+a.h/2,zy=z.y+z.h/2;let d;
-  if(z.b.x>a.b.x+1){const x1=a.b.x+a.b.w,x2=z.b.x,m=(x2-x1)/2;d=`M${a.x+a.w},${ay}L${x1},${ay}C${x1+m},${ay} ${x2-m},${zy} ${x2},${zy}L${z.x},${zy}`;}
-  else if(z.b.x<a.b.x-1){const x1=a.b.x,x2=z.b.x+z.b.w,m=(x1-x2)/2;d=`M${a.x},${ay}L${x1},${ay}C${x1-m},${ay} ${x2+m},${zy} ${x2},${zy}L${z.x+z.w},${zy}`;}
-  else{const x=a.b.x+a.b.w,o=60+Math.abs(zy-ay)*0.15;d=`M${a.x+a.w},${ay}L${x},${ay}C${x+o},${ay} ${x+o},${zy} ${x},${zy}L${z.x+z.w},${zy}`;}
+  const ca=a.b.col,cz=z.b.col;
+  if(ca!==cz){const dir=cz>ca?1:-1,x1=dir>0?a.b.x+a.b.w:a.b.x,x2=dir>0?z.b.x:z.b.x+z.b.w;
+   d=`M${dir>0?a.x+a.w:a.x},${ay}L${x1},${ay}`;let px=x1,py=ay;
+   for(let ci=ca+dir;ci!==cz;ci+=dir){const c0=colX[ci],c1=colX[ci]+cols[ci][0].cw,t=ay+(zy-ay)*(ci-ca)/(cz-ca),wy=gapY(ci,t);
+    const ex=dir>0?c0:c1,lx=dir>0?c1:c0;d+=seg(px,py,ex,wy)+`L${lx},${wy}`;px=lx;py=wy;}
+   d+=seg(px,py,x2,zy)+`L${dir>0?z.x:z.x+z.w},${zy}`;}
+  else{const x=a.b.x+a.b.w,o=50+Math.abs(zy-ay)*0.2;d=`M${a.x+a.w},${ay}L${x},${ay}C${x+o},${ay} ${x+o},${zy} ${x},${zy}L${z.x+z.w},${zy}`;}
   const A=N.get(l.from),Z=N.get(l.to),via=[...l.via].map(v=>N.get(v)?.label).filter(Boolean);
   const tip=`${compOf(A)}: ${A.label}\n${l.k==='http'?'calls over HTTP':'→ event '+via.join(', ')+' → handled by'}\n${compOf(Z)}: ${Z.label}${l.at.f?'\n'+l.at.f+':'+l.at.l:''}`;
   edges.push(`<path class="ce ${l.k}" data-s="${esc(l.from)}" data-d="${esc(l.to)}" d="${d}" marker-end="url(#ca-${l.k})"><title>${esc(tip)}</title></path>`);}
