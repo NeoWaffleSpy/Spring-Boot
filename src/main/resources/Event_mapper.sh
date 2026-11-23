@@ -1134,6 +1134,7 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .h1sub{font-weight:400;color:var(--mute)}
 .badge.cmpb{color:var(--mute)}
 #csvg{width:100%;height:100%;display:block;cursor:grab;user-select:none;touch-action:none}#csvg.pan{cursor:grabbing}
+.cbx{cursor:move}#csvg.moving,#csvg.moving *,#gsvg.moving,#gsvg.moving *{cursor:grabbing!important}.gn.drag .box{filter:drop-shadow(0 3px 6px rgba(0,0,0,.35))}
 .cbx rect{fill:color-mix(in srgb,var(--ink) 3%,var(--panel));stroke:var(--line);stroke-width:1.5}.cbt{fill:var(--ink);font-weight:700;font-size:13px}
 .cn{cursor:pointer}.cn .box{fill:var(--panel);stroke-width:1.5}.cn:hover .box{fill:var(--hi)}.cn text{fill:var(--ink);font-size:12px}.cn text.gm{font-weight:600;font-size:12.5px}.cn text.gp{fill:var(--mute);font-size:10px}.cn text.ki{font-size:14px;font-weight:700}
 .cn text.f-endpoint{fill:var(--ep)}.cn text.f-event{fill:var(--ev)}.cn text.f-handler{fill:var(--hd)}.cn text.f-method{fill:var(--me)}.cn text.f-lambda{fill:var(--la)}.cn text.f-class{fill:var(--cl)}
@@ -1306,7 +1307,7 @@ $('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
  else $('#detail').innerHTML='<div class="empty">Pick an item on the left to center the graph on it.</div>';};
 // graph: centered on the selected item, incoming links on the left, outgoing on the right.
 // Each node has two badges: ◂ (top left) opens its incoming links, ▸ (top right) its outgoing ones.
-const G={center:null,open:new Set(),lim:new Map(),pos:new Map(),t:{x:0,y:0,k:1},hide:false,auto:true,focus:null,dragged:false};
+const G={center:null,open:new Set(),lim:new Map(),pos:new Map(),t:{x:0,y:0,k:1},hide:false,auto:true,focus:null,dragged:false,moved:new Map()};
 // Node sizes follow their text: each column is as wide as its longest name (GMIN..GMAX), names
 // still too long wrap at dots / camelCase humps, and node height follows the number of lines.
 const GMIN=190,GMAX=400,GHMIN=46,LH=14,GAP=96,VGAP=20,GLIM=25;
@@ -1395,14 +1396,14 @@ function gShell(){const n=N.get(G.center);
  <div class="toolbar"><button class="btn" id="gExpB" title="Open the incoming links of every node shown">◀ Expand all</button><button class="btn" id="gExpF" title="Open the outgoing links of every node shown">Expand all ▶</button>
  <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button>
  <label class="sub"><input type="checkbox" id="hideCalls" ${G.hide?'checked':''}> events only</label></div>
- <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
+ <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · drag a node to move it (Collapse all resets) · drag the background to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
  <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls','http'].map(k=>
   `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':k==='http'?'--ep':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
- <div class="glegend"><div>${shapes}<span class="unrl"><svg width="20" height="13"><rect x="1" y="1" width="18" height="11" rx="3"/></svg>unresolved</span>${[...SP].map(([d,o])=>`<span class="sptag" style="--sp:var(--sp${o.i})">${esc(d)}</span>`).join('')}</div><div><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
+ <div class="glegend"><div>${shapes}${DATA.nodes.some(n=>n.unres)?'<span class="unrl"><svg width="20" height="13"><rect x="1" y="1" width="18" height="11" rx="3"/></svg>unresolved</span>':''}${[...SP].filter(([d])=>DATA.nodes.some(n=>spOf(n)?.name===d)).map(([d,o])=>`<span class="sptag" style="--sp:var(--sp${o.i})">${esc(d)}</span>`).join('')}</div><div><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
  <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span>${HAS_HTTP?'<span><i style="border-color:var(--ep);border-top-style:dashed"></i>HTTP</span>':''}<span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div></div>`;
  const expandAll=d=>{for(const id of G.pos.keys())if(N.has(id)&&uniqNext(id,d).length)G.open.add(id+'|'+d);drawGraph(null,true);};
  $('#gExpB').onclick=()=>expandAll('bwd');$('#gExpF').onclick=()=>expandAll('fwd');
- $('#gCollapse').onclick=()=>{G.open=new Set([G.center+'|bwd',G.center+'|fwd']);G.lim=new Map();drawGraph(null,true);};
+ $('#gCollapse').onclick=()=>{G.open=new Set([G.center+'|bwd',G.center+'|fwd']);G.lim=new Map();G.moved=new Map();drawGraph(null,true);};
  $('#gFit').onclick=()=>{gFit();gApply();};
  $('#hideCalls').onchange=e=>{G.hide=e.target.checked;drawGraph(null,true);};
  const svg=$('#gsvg');let drag=null;
@@ -1411,11 +1412,19 @@ function gShell(){const n=N.get(G.center);
   G.t.x=mx-(mx-G.t.x)*k/G.t.k;G.t.y=my-(my-G.t.y)*k/G.t.k;G.t.k=k;G.auto=false;gApply();},{passive:false});
  // refit when the panel gets its final size, until the user pans or zooms
  new ResizeObserver(()=>{if(G.auto&&$('#gsvg')===svg){gFit();gApply();}}).observe(svg);
- svg.addEventListener('pointerdown',e=>{if(e.target.closest('.gn,.gmore'))return;
+ // drag the background to pan, drag a node to move it (its links follow; a short press is a click)
+ svg.addEventListener('pointerdown',e=>{if(e.button)return;if(e.target.closest('.gb,.gmore'))return;const g=e.target.closest('.gn');
+  if(g){const p=G.pos.get(g.dataset.id);drag={node:g.dataset.id,g,x:e.clientX,y:e.clientY,px:p.x,py:p.y,moved:false};return;}
   drag={x:e.clientX,y:e.clientY,tx:G.t.x,ty:G.t.y,moved:false};svg.classList.add('pan');svg.setPointerCapture(e.pointerId);});
  svg.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
-  if(Math.abs(dx)+Math.abs(dy)>4){drag.moved=true;G.auto=false;}G.t.x=drag.tx+dx;G.t.y=drag.ty+dy;gApply();});
- const endDrag=()=>{if(drag&&drag.moved){G.dragged=true;setTimeout(()=>G.dragged=false);}drag=null;svg.classList.remove('pan');};
+  if(!drag.moved&&Math.abs(dx)+Math.abs(dy)<=4)return;
+  if(!drag.moved){drag.moved=true;G.auto=false;if(drag.node){svg.classList.add('moving');drag.g.classList.add('drag');svg.setPointerCapture(e.pointerId);}}
+  if(drag.node){const p=G.pos.get(drag.node);p.x=drag.px+dx/G.t.k;p.y=drag.py+dy/G.t.k;gMoveNode(drag.node,drag.g);return;}
+  G.t.x=drag.tx+dx;G.t.y=drag.ty+dy;gApply();});
+ const endDrag=()=>{if(drag&&drag.moved){G.dragged=true;setTimeout(()=>G.dragged=false);
+   if(drag.node){const p=G.pos.get(drag.node),m=G.moved.get(drag.node)||{dx:0,dy:0};
+    G.moved.set(drag.node,{dx:m.dx+p.x-drag.px,dy:m.dy+p.y-drag.py});svg.classList.remove('moving');drawGraph(null);}}
+  drag=null;svg.classList.remove('pan');};
  svg.addEventListener('pointerup',endDrag);svg.addEventListener('pointercancel',endDrag);
  svg.addEventListener('click',e=>{if(G.dragged)return;
   const b=e.target.closest('.gb');if(b){gToggle(b.closest('.gn').dataset.id,b.dataset.d);return;}
@@ -1434,11 +1443,12 @@ function gBadge(id,d,pos,w){const all=uniqNext(id,d);if(!all.length)return'';
  const t=on?(d==='bwd'?'◂ −':'− ▸'):(d==='bwd'?'◂ '+hidden:hidden+' ▸'),bw=Math.max(28,12+t.length*6.5);
  return `<g class="gb${on?' on':''}" data-d="${d}" transform="translate(${d==='bwd'?0:w},0)"><title>${on?'Hide':'Show'} ${d==='bwd'?'incoming':'outgoing'} links (${all.length}${hidden?', '+hidden+' not shown':''})</title><rect x="${-bw/2}" y="-9" width="${bw}" height="18" rx="9"/><text y="4">${t}</text></g>`;}
 function drawGraph(anchor,fit){
- if(G.center!==selected){G.center=selected;G.open=new Set([selected+'|bwd',selected+'|fwd']);G.lim=new Map();G.pos=new Map();G.focus=null;fit=true;}
+ if(G.center!==selected){G.center=selected;G.open=new Set([selected+'|bwd',selected+'|fwd']);G.lim=new Map();G.pos=new Map();G.focus=null;G.moved=new Map();fit=true;}
  if(!$('#gsvg')||$('#gsvg').dataset.c!==G.center){gShell();fit=true;}
- const old=anchor&&G.pos.get(anchor),pos=gLayout();G.pos=pos;if(G.focus&&!pos.has(G.focus))G.focus=null;
+ const old=anchor&&G.pos.get(anchor),pos=gLayout();G.pos=pos;
+ for(const [id,m] of G.moved){const p=pos.get(id);if(p){p.x+=m.dx;p.y+=m.dy;}}if(G.focus&&!pos.has(G.focus))G.focus=null;
  const edges=[],labels=[],seen=new Set();
- for(const [id,p] of pos){if(p.more){const o=pos.get(p.more.owner);edges.push(`<path class="ge more" d="${p.more.d==='fwd'?edgePath(o,p):edgePath(p,o)}"/>`);continue;}
+ for(const [id,p] of pos){if(p.more){const o=pos.get(p.more.owner);edges.push(`<path class="ge more" data-o="${esc(p.more.owner)}" data-m="${esc(id)}" d="${p.more.d==='fwd'?edgePath(o,p):edgePath(p,o)}"/>`);continue;}
   for(const e of uniqNext(id,'fwd')){if(!pos.has(e.id)||seen.has(id+'>'+e.id))continue;seen.add(id+'>'+e.id);
    const a=N.get(id),b=N.get(e.id),k=FWD[e.k]?e.k:'calls',q=pos.get(e.id);
    edges.push(`<path class="ge ${k}${e.via?' via':''}" data-s="${esc(id)}" data-d="${esc(e.id)}" d="${edgePath(p,q)}" marker-end="url(#ar-${k})"><title>${esc(a.label+' '+(FWD[e.k]||e.k)+' '+b.label+(e.a?' (written as the alias '+e.a+')':'')+(e.f?' — '+e.f+':'+e.l:''))}</title></path>`);
@@ -1465,6 +1475,12 @@ function drawGraph(anchor,fit){
  if(fit)gFit();
  else if(old&&pos.get(anchor)){G.auto=false;const p=pos.get(anchor);G.t.x-=(p.x-old.x)*G.t.k;G.t.y-=(p.y-old.y)*G.t.k;}
  gApply();gHighlight();gInfo();}
+// while a node is dragged: move it and redraw only the links touching it ("as ALIAS" labels are
+// hidden until the drop, when the whole graph is redrawn with the new position)
+function gMoveNode(id,g){const p=G.pos.get(id),vp=$('#gvp');g.setAttribute('transform',`translate(${p.x-p.w/2},${p.y-p.h/2})`);
+ vp.querySelectorAll('.gal').forEach(t=>t.style.display='none');
+ vp.querySelectorAll('.ge[data-s]').forEach(e=>{if(e.dataset.s===id||e.dataset.d===id){const a=G.pos.get(e.dataset.s),b=G.pos.get(e.dataset.d);if(a&&b)e.setAttribute('d',edgePath(a,b));}});
+ vp.querySelectorAll('.ge.more').forEach(e=>{if(e.dataset.o===id){const m=G.pos.get(e.dataset.m),o=p;e.setAttribute('d',m.more.d==='fwd'?edgePath(o,m):edgePath(m,o));}});}
 // focus: a clicked node lights up with its direct links, and a details card opens
 function gFocus(id){G.focus=id;gHighlight();gInfo();}
 function gHighlight(){const vp=$('#gvp');if(!vp)return;vp.querySelectorAll('.hl,.foc').forEach(e=>e.classList.remove('hl','foc'));
@@ -1514,7 +1530,7 @@ function drawConn(){const links=connLinks();
  const items=new Map();for(const l of links){for(const id of [l.from,l.to]){const c=compOf(N.get(id));(items.get(c)||items.set(c,new Set()).get(c)).add(id);}}
  const comps=[...items.keys()].sort((a,b)=>a.localeCompare(b));
  $('#detail').innerHTML=`<div class="title"><h2>Connectivity</h2><span class="sub">${comps.length} components · ${links.length} links</span></div>
- <div class="help">Endpoints, and what they reach in other components: an event handled there, or an HTTP call matched to its endpoint (plain calls into shared modules are followed, not shown). Hover an item to see its links · click it to open it in the graph · drag to pan, scroll to zoom · <b>F</b> fit</div>
+ <div class="help">Endpoints, and what they reach in other components: an event handled there, or an HTTP call matched to its endpoint (plain calls into shared modules are followed, not shown). Hover an item to see its links · click it to open it in the graph · drag a component to move it · drag the background to pan, scroll to zoom · <b>F</b> fit</div>
  <div id="gwrap"><svg id="csvg"><defs>${['event','http'].map(k=>`<marker id="ca-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='http'?'--ep':'--hd'})"/></marker>`).join('')}</defs><g id="cvp"></g></svg></div>
  <div class="glegend"><div><span class="cbox">▣</span>component<span><svg width="20" height="13"><path class="s-endpoint" d="${shapeD('endpoint',20,13)}" style="fill:var(--panel);stroke-width:1.4"/></svg>endpoint</span></div>
  <div><span><i style="border-color:var(--hd)"></i>event handled in another component</span><span><i style="border-color:var(--ep);border-top-style:dashed"></i>HTTP call</span></div></div>`;
@@ -1549,38 +1565,45 @@ function drawConn(){const links=connLinks();
   for(const col of cols){
    for(const b of col){const ky=new Map(b.ids.map((id,k)=>[id,mean([id])??(b.y+36+k*46)]));b.ids.sort((p,q)=>ky.get(p)-ky.get(q));}
    const ky=new Map(col.map(b=>[b,mean(b.ids)??b.y]));col.sort((p,q)=>ky.get(p)-ky.get(q));place();}}
- const out=[];
- for(const col of cols)for(const b of col)out.push(`<g class="cbx"><rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="12"/><text class="cbt" x="${b.x+14}" y="${b.y+22}">▣ ${esc(b.c)}</text></g>`);
- // links leave from the side facing the target and enter on the side facing the source; a link
- // spanning several columns crosses each column in between through a free gap (between or around
- // its boxes, a few px apart per link) instead of over the boxes. Same column: both on the right.
- const used=new Map();
- const gapY=(ci,t)=>{const col=cols[ci],iv=[];let top=-1e9;
-  for(const b of col){iv.push([top,b.y-12]);top=b.y+b.h+12;}iv.push([top,1e9]);
+ CL={links,cols,colX,boxes:cols.flat()};connRender();
+ C.auto=true;connFit();connWire();}
+let CL=null;
+// links leave from the side facing the target and enter on the side facing the source. Between the
+// two boxes, a link crosses each layout column through a free gap (between or around the boxes now
+// standing in it, a few px apart per link) instead of over them. Boxes overlapping horizontally:
+// both ends on the right, bulging out. Routing uses the current positions, so it follows drags.
+function connRender(){const {links,cols,colX,boxes}=CL,pos=new Map();
+ for(const b of boxes)b.ids.forEach((id,k)=>pos.set(id,{x:b.x+12,y:b.y+36+k*46,w:b.w-24,h:38,b}));
+ const out=boxes.map(b=>`<g class="cbx" data-c="${esc(b.c)}"><title>Drag to move the component</title><rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="12"/><text class="cbt" x="${b.x+14}" y="${b.y+22}">▣ ${esc(b.c)}</text></g>`);
+ const used=new Map(),colSpan=ci=>[colX[ci],colX[ci]+cols[ci][0].cw];
+ const gapY=(ci,t)=>{const [c0,c1]=colSpan(ci),inCol=boxes.filter(b=>b.x<c1&&b.x+b.w>c0).sort((p,q)=>p.y-q.y),iv=[];let top=-1e9;
+  for(const b of inCol){iv.push([top,b.y-12]);top=Math.max(top,b.y+b.h+12);}iv.push([top,1e9]);
   let best=null;for(const [lo,hi] of iv){if(hi-lo<8)continue;const y=Math.min(hi,Math.max(lo,t)),d=Math.abs(y-t);if(!best||d<best.d)best={y,d,lo,hi};}
+  if(!best)return t;
   const u=used.get(ci)||used.set(ci,[]).get(ci);let y=best.y,k=0;
   while(u.some(v=>Math.abs(v-y)<7)&&k<40){k++;const s=Math.ceil(k/2)*7*(k%2?1:-1),c=best.y+s;if(c>=best.lo&&c<=best.hi)y=c;}
   u.push(y);return y;};
  const seg=(px,py,qx,qy)=>{const m=(qx-px)/2;return `C${px+m},${py} ${qx-m},${qy} ${qx},${qy}`;};
  const edges=[];
  for(const l of links){const a=pos.get(l.from),z=pos.get(l.to);if(!a||!z)continue;const ay=a.y+a.h/2,zy=z.y+z.h/2;let d;
-  const ca=a.b.col,cz=z.b.col;
-  if(ca!==cz){const dir=cz>ca?1:-1,x1=dir>0?a.b.x+a.b.w:a.b.x,x2=dir>0?z.b.x:z.b.x+z.b.w;
+  const A0=a.b.x,A1=a.b.x+a.b.w,Z0=z.b.x,Z1=z.b.x+z.b.w,dir=Z0>A1+20?1:Z1<A0-20?-1:0;
+  if(dir){const x1=dir>0?A1:A0,x2=dir>0?Z0:Z1;
    d=`M${dir>0?a.x+a.w:a.x},${ay}L${x1},${ay}`;let px=x1,py=ay;
-   for(let ci=ca+dir;ci!==cz;ci+=dir){const c0=colX[ci],c1=colX[ci]+cols[ci][0].cw,t=ay+(zy-ay)*(ci-ca)/(cz-ca),wy=gapY(ci,t);
+   const mid=[];for(let ci=0;ci<cols.length;ci++){const [c0,c1]=colSpan(ci);if(dir>0?(c0>=x1&&c1<=x2):(c0>=x2&&c1<=x1))mid.push(ci);}
+   if(dir<0)mid.reverse();
+   for(const ci of mid){const [c0,c1]=colSpan(ci),cx=(c0+c1)/2,t=ay+(zy-ay)*(cx-x1)/(x2-x1),wy=gapY(ci,t);
     const ex=dir>0?c0:c1,lx=dir>0?c1:c0;d+=seg(px,py,ex,wy)+`L${lx},${wy}`;px=lx;py=wy;}
    d+=seg(px,py,x2,zy)+`L${dir>0?z.x:z.x+z.w},${zy}`;}
-  else{const x=a.b.x+a.b.w,o=50+Math.abs(zy-ay)*0.2;d=`M${a.x+a.w},${ay}L${x},${ay}C${x+o},${ay} ${x+o},${zy} ${x},${zy}L${z.x+z.w},${zy}`;}
+  else{const x=Math.max(A1,Z1),o=50+Math.abs(zy-ay)*0.2;d=`M${a.x+a.w},${ay}L${x},${ay}C${x+o},${ay} ${x+o},${zy} ${x},${zy}L${z.x+z.w},${zy}`;}
   const A=N.get(l.from),Z=N.get(l.to),via=[...l.via].map(v=>N.get(v)?.label).filter(Boolean);
   const tip=`${compOf(A)}: ${A.label}\n${l.k==='http'?'calls over HTTP':'→ event '+via.join(', ')+' → handled by'}\n${compOf(Z)}: ${Z.label}${l.at.f?'\n'+l.at.f+':'+l.at.l:''}`;
   edges.push(`<path class="ce ${l.k}" data-s="${esc(l.from)}" data-d="${esc(l.to)}" d="${d}" marker-end="url(#ca-${l.k})"><title>${esc(tip)}</title></path>`);}
  const nodes=[];
  for(const [id,p] of pos){const n=N.get(id),[own,mem]=splitName(n),room=p.w-50;
-  nodes.push(`<g class="cn${n.unres?' unr':''}" data-id="${esc(id)}" transform="translate(${p.x},${p.y})"><title>${esc(KIND[n.kind][1]+': '+n.label+(n.file?'\n'+n.file+':'+n.line:''))}</title>
+  nodes.push(`<g class="cn${n.unres?' unr':''}" data-id="${esc(id)}" data-c="${esc(p.b.c)}" transform="translate(${p.x},${p.y})"><title>${esc(KIND[n.kind][1]+': '+n.label+(n.file?'\n'+n.file+':'+n.line:''))}</title>
    <path class="box s-${n.kind}" d="${shapeD(n.kind,p.w,p.h)}"/><text class="ki f-${n.kind}" x="${n.kind==='endpoint'?13:11}" y="${p.h/2+5}">${KIND[n.kind][0]}</text>
    <text class="gm" x="37" y="16">${esc(ell(mem||n.label,'gm',room))}</text><text class="gp" x="37" y="30">${esc(ell(connSub(n),'gp',room))}</text></g>`);}
- $('#cvp').innerHTML=out.join('')+edges.join('')+nodes.join('');
- C.auto=true;connFit();connWire();}
+ $('#cvp').innerHTML=out.join('')+edges.join('')+nodes.join('');}
 function connSub(n){return n.kind==='endpoint'&&n.path?`${n.verb||'ANY'} ${n.path}`:(KIND[n.kind][1]+(splitName(n)[0]?' · '+splitName(n)[0]:''));}
 function connFit(){const svg=$('#csvg'),vp=$('#cvp');if(!svg||!vp)return;const b=vp.getBBox(),W=svg.clientWidth||800,H=svg.clientHeight||500;
  const k=Math.min(1.1,W/(b.width+60),H/(b.height+60));C.t={k,x:W/2-(b.x+b.width/2)*k,y:H/2-(b.y+b.height/2)*k};connApply();}
@@ -1589,12 +1612,18 @@ function connWire(){const svg=$('#csvg');let drag=null;
  new ResizeObserver(()=>{if(C.auto&&$('#csvg')===svg)connFit();}).observe(svg);
  svg.addEventListener('wheel',e=>{e.preventDefault();const r=svg.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
   const k=Math.min(3,Math.max(0.12,C.t.k*Math.exp(-e.deltaY*0.0015)));C.t.x=mx-(mx-C.t.x)*k/C.t.k;C.t.y=my-(my-C.t.y)*k/C.t.k;C.t.k=k;C.auto=false;connApply();},{passive:false});
- svg.addEventListener('pointerdown',e=>{if(e.target.closest('.cn'))return;drag={x:e.clientX,y:e.clientY,tx:C.t.x,ty:C.t.y,moved:false};svg.classList.add('pan');svg.setPointerCapture(e.pointerId);});
- svg.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>4){drag.moved=true;C.auto=false;}C.t.x=drag.tx+dx;C.t.y=drag.ty+dy;connApply();});
- const end=()=>{if(drag&&drag.moved){C.dragged=true;setTimeout(()=>C.dragged=false);}drag=null;svg.classList.remove('pan');};
+ // drag a component (its box or any item in it) to move it, the background to pan
+ svg.addEventListener('pointerdown',e=>{if(e.button)return;const g=e.target.closest('.cbx,.cn');
+  if(g){const b=CL.boxes.find(b=>b.c===g.dataset.c);drag={box:b,x:e.clientX,y:e.clientY,bx:b.x,by:b.y,moved:false};return;}
+  drag={x:e.clientX,y:e.clientY,tx:C.t.x,ty:C.t.y,moved:false};svg.classList.add('pan');svg.setPointerCapture(e.pointerId);});
+ svg.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
+  if(!drag.moved&&Math.abs(dx)+Math.abs(dy)<=4)return;if(!drag.moved){drag.moved=true;C.auto=false;if(drag.box){svg.classList.add('moving');svg.setPointerCapture(e.pointerId);}}
+  if(drag.box){drag.box.x=drag.bx+dx/C.t.k;drag.box.y=drag.by+dy/C.t.k;C.hl=null;$('#cvp').classList.remove('dim');connRender();return;}
+  C.t.x=drag.tx+dx;C.t.y=drag.ty+dy;connApply();});
+ const end=()=>{if(drag&&drag.moved){C.dragged=true;setTimeout(()=>C.dragged=false);}drag=null;svg.classList.remove('pan','moving');};
  svg.addEventListener('pointerup',end);svg.addEventListener('pointercancel',end);
  const vp=$('#cvp');
- svg.addEventListener('mouseover',e=>{const g=e.target.closest('.cn');const id=g?g.dataset.id:null;if(id===C.hl)return;C.hl=id;
+ svg.addEventListener('mouseover',e=>{if(svg.classList.contains('moving'))return;const g=e.target.closest('.cn');const id=g?g.dataset.id:null;if(id===C.hl)return;C.hl=id;
   vp.classList.toggle('dim',!!id);vp.querySelectorAll('.hl').forEach(x=>x.classList.remove('hl'));if(!id)return;g.classList.add('hl');
   vp.querySelectorAll('.ce').forEach(p=>{if(p.dataset.s===id||p.dataset.d===id){p.classList.add('hl');const o=p.dataset.s===id?p.dataset.d:p.dataset.s;vp.querySelector(`.cn[data-id="${CSS.escape(o)}"]`)?.classList.add('hl');}});});
  svg.addEventListener('click',e=>{if(C.dragged)return;const g=e.target.closest('.cn');if(!g)return;setView('graph');go(g.dataset.id);if(selected===g.dataset.id)select(selected);});}
