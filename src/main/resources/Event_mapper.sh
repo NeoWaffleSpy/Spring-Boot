@@ -51,6 +51,13 @@ ENDPOINT_ANNOTATIONS="GetMapping=GET PostMapping=POST PutMapping=PUT DeleteMappi
 # Each call becomes an endpoint named "Lambda <method that registers it>".
 ROUTE_METHODS="addRoute"
 
+# Method names of HTTP clients. A call whose arguments hold a URL (string
+# literals and String constants, "+ variable" parts act as wildcards) is matched
+# to the endpoint with that path, e.g. restTemplate.postForObject("/orders", ..)
+# or webClient.get().uri("/orders/" + id). The verb comes from an HttpMethod.X
+# argument, the method name (getFor.., postFor..) or webClient.get()/post()...
+CLIENT_METHODS="getForObject getForEntity postForObject postForEntity postForLocation put delete patchForObject exchange uri"
+
 # Annotations whose first string is a URL path (class-level = prefix).
 PATH_ANNOTATIONS="RequestMapping Path"
 
@@ -114,6 +121,14 @@ else
 fi
 echo "Scanning $(wc -l < "$TMP/files.txt" | tr -d ' ') Java files with $AWK_BIN ..." >&2
 
+# ---- components: every folder holding a pom.xml ---------------------------------
+if [ ${#PRUNE[@]} -gt 0 ]; then
+  COMPONENTS="$(cd "$ROOT_ABS" && find . -type d \( "${PRUNE[@]}" \) -prune -o -type f -name pom.xml -print)"
+else
+  COMPONENTS="$(cd "$ROOT_ABS" && find . -type f -name pom.xml -print)"
+fi
+[ -n "$COMPONENTS" ] && COMPONENTS="$(printf '%s\n' "$COMPONENTS" | sed -e 's|^\./||' -e 's|/*pom\.xml$||' -e 's|^$|.|' | sort -u | tr '\n' '|')"
+
 # ---- the analyser (awk) ------------------------------------------------------
 read -r -d '' AWK_PROG <<'EOF_AWK' || true
 # Event_mapper analyser - portable POSIX awk (gawk, mawk, BSD/macOS awk, busybox)
@@ -133,6 +148,7 @@ BEGIN {
   nw = split(path_ann, w, " ");       for (i = 1; i <= nw; i++) PATHANN[w[i]] = 1
   nCB = split(callback_methods, CBL, " ")
   nw = split(route_methods, w, " ");  for (i = 1; i <= nw; i++) ROUTE[w[i]] = 1
+  nw = split(client_methods, w, " "); for (i = 1; i <= nw; i++) CLIENT[w[i]] = 1
   nw = split(endpoint_ann, w, " ")
   for (i = 1; i <= nw; i++) { p = index(w[i], "="); if (p) EPANN[substr(w[i], 1, p - 1)] = substr(w[i], p + 1); else EPANN[w[i]] = "ANY" }
   FOLLOW = (follow_calls + 0 != 0)
@@ -537,6 +553,72 @@ function argEnd(a, b,   x, d) {
   return b
 }
 
+# HTTP client call: remember its verb and, per argument, the pieces a URL could be made of
+# (S:literal, C:Constant, ? = anything else); they are resolved once every constant is known
+function clientCall(i, rel, sc, ce,   a, e, x, k, pc, ch, verb, t) {
+  t = T[i]; verb = ""
+  for (x = i + 2; x < ce; x++) if (T[x] == "." && T[x + 1] ~ /^(GET|POST|PUT|DELETE|PATCH)$/) { verb = T[x + 1]; break }
+  if (verb == "" && t == "uri" && T[i - 1] == "." && T[i - 2] == ")" && T[i - 3] == "(" && T[i - 4] ~ /^(get|post|put|delete|patch)$/) verb = toupper(T[i - 4])
+  if (verb == "" && match(t, /^(get|post|put|delete|patch)/)) verb = toupper(substr(t, 1, RLENGTH))
+  nHC++; HCsc[nHC] = sc; HCf[nHC] = rel; HCl[nHC] = L[i]; HCverb[nHC] = verb; HCn[nHC] = 0
+  a = i + 2
+  for (k = 1; k <= 6 && a < ce; k++) {
+    e = argEnd(a, ce); pc = ""
+    for (x = a; x < e; x++) {
+      if (K[x] == "s") pc = pc LS "S:" T[x]
+      else if (T[x] == "+") continue
+      else if (K[x] == "i") {
+        ch = T[x]; while (T[x + 1] == "." && K[x + 2] == "i") { x += 2; ch = ch "." T[x] }
+        if (T[x + 1] == "(") { pc = pc LS "?"; if ((x + 1) in PM) x = PM[x + 1] }
+        else if (ch ~ /^[A-Z]/ || ch ~ /\.[A-Z]/) pc = pc LS "C:" ch
+        else pc = pc LS "?"
+      }
+      else { pc = pc LS "?"; if (T[x] == "(" && (x in PM)) x = PM[x] }
+    }
+    HCn[nHC] = k; HCarg[nHC, k] = substr(pc, 2)
+    a = e + 1
+  }
+}
+# URL of a client call: the first argument whose pieces give a string holding a "/"
+function clientUrl(n,   k, np, pp, x, out, v) {
+  for (k = 1; k <= HCn[n]; k++) {
+    np = split(HCarg[n, k], pp, LS); out = ""
+    for (x = 1; x <= np; x++) {
+      if (substr(pp[x], 1, 2) == "S:") out = out substr(pp[x], 3)
+      else if (substr(pp[x], 1, 2) == "C:") { v = normEv(pp[x]); out = out (evFound ? v : "{}") }
+      else out = out "{}"
+    }
+    if (index(out, "/")) return out
+  }
+  return ""
+}
+# endpoints whose path ends the URL (segment by segment; {..} on either side is a wildcard,
+# at least one literal segment must match); only the best-scoring ones are kept
+function matchUrl(url, verb,   cs, nc, m, es, ne, j, c1, e1, lit, ok, best, out, sc, x) {
+  sub(/^[a-zA-Z]+:\/\/[^\/]*/, "", url); sub(/[?#].*/, "", url)
+  nc = split(url, cs, "/"); j = 0
+  for (m = 1; m <= nc; m++) if (cs[m] != "") cs[++j] = cs[m]
+  nc = j; best = 0; out = ""
+  for (m in mPath) {
+    if (substr(mPath[m], 1, 1) == "{") continue
+    if (verb != "" && mVerb[m] != "" && mVerb[m] != verb) continue
+    ne = split(mPath[m], es, "/"); j = 0
+    for (x = 1; x <= ne; x++) if (es[x] != "") es[++j] = es[x]
+    ne = j; if (ne == 0 || ne > nc) continue
+    lit = 0; ok = 1
+    for (j = 1; j <= ne; j++) {
+      c1 = cs[nc - ne + j]; e1 = es[j]
+      if (index(c1, "{") || index(e1, "{")) continue
+      if (c1 != e1) { ok = 0; break }
+      lit++
+    }
+    if (!ok || lit == 0) continue
+    sc = lit * 10 - (nc - ne)
+    if (sc > best) { best = sc; out = m } else if (sc == best) out = out LS m
+  }
+  return out
+}
+
 # router.addRoute(VERB, name, handler): an endpoint "Lambda <registering method>" that calls
 # the handler (a lambda node, a method reference, or an unresolved handler)
 function routeCall(i, rel, sc, fq, ce,   a1, e1, a2, e2, a3, a, rid, own, verb, path, lid, q) {
@@ -613,6 +695,7 @@ function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, 
       if (Lkind[n] == "site") addUnres(rel, L[i], sc, "handler not resolved, shown at registration site: " LN[L[i]])
     }
   }
+  if ((t in CLIENT) && inBody && !(t in EMIT) && !(t in LISTEN)) clientCall(i, rel, sc, ce)
   if (FOLLOW && inBody && t ~ /^[a-z_]/ && !(t in CTRL) && !(t in EMIT) && !(t in LISTEN)) {
     recv = ""
     if (prev == ".") { if (K[pi - 1] == "i" && T[pi - 2] != ".") recv = T[pi - 1]; else return }
@@ -839,6 +922,12 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     nn = split(targets, arr, LS)
     for (x = 1; x <= nn; x++) { if (arr[x] in mFile) addMethodNode(arr[x]); addEdge(rid, arr[x], "calls", Rfile[n], Rline[n]) }
   }
+  for (n = 1; n <= nHC; n++) {
+    v = clientUrl(n); if (v == "") continue
+    targets = matchUrl(v, HCverb[n]); if (targets == "") continue
+    nn = split(targets, arr, LS); s = nodeForScope(HCsc[n])
+    for (x = 1; x <= nn; x++) { if (arr[x] in mFile) addMethodNode(arr[x]); addEdge(s, arr[x], "http", HCf[n], HCl[n]); HTTPT[arr[x]] = 1 }
+  }
   for (n = 1; n <= nUE; n++) {
     eid = "unres:e:" UEf[n] ":" UEl[n] ":" n
     addNode(eid, "event", (UEt[n] == "" ? "unknown event" : UEt[n]), "", UEf[n], UEl[n]); UNR[eid] = 1
@@ -865,7 +954,7 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
   }
   for (id in NK) if (NK[id] == "event" || NK[id] == "lambda" || (id in ROUTEN) || (id in UNR) || ((id in mFile) && mRoles[id] != "")) KEEP[id] = 1
   qh = 1; qt = 0
-  for (id in NK) if (NK[id] == "event") { Q[++qt] = id; REACH[id] = 1 }
+  for (id in NK) if (NK[id] == "event" || (id in HTTPT)) { Q[++qt] = id; REACH[id] = 1 }
   while (qh <= qt) {
     cur = Q[qh++]
     if (cur in REV) {
@@ -894,7 +983,14 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
   }
 
   # ---- write JSON ----
-  printf "{\"meta\":{\"root\":\"%s\",\"generated\":\"%s\",\"files\":%d,\"special\":\"%s\"},", jesc(root), jesc(generated), nFiles, jesc(special_dirs) > outfile
+  printf "{\"meta\":{\"root\":\"%s\",\"generated\":\"%s\",\"files\":%d,\"special\":\"%s\",\"components\":[", jesc(root), jesc(generated), nFiles, jesc(special_dirs) > outfile
+  nn = split(components, arr, "|"); first = 1
+  for (x = 1; x <= nn; x++) {
+    if (arr[x] == "") continue
+    v = arr[x]; sub(/.*\//, "", v); if (arr[x] == ".") v = root_name
+    printf "%s{\"dir\":\"%s\",\"name\":\"%s\"}", (first ? "" : ","), jesc(arr[x] == "." ? "" : arr[x]), jesc(v) > outfile; first = 0
+  }
+  printf "]}," > outfile
   printf "\"edges\":[" > outfile
   first = 1; nEdges = 0
   for (key in E) {
@@ -959,7 +1055,8 @@ EOF_AWK
   -v emit_methods="$EMIT_METHODS" -v listen_methods="$LISTEN_METHODS" \
   -v listen_ann="$LISTEN_ANNOTATIONS" -v ev_keys="$EVENT_ANNOTATION_KEYS" \
   -v endpoint_ann="$ENDPOINT_ANNOTATIONS" -v path_ann="$PATH_ANNOTATIONS" \
-  -v callback_methods="$CALLBACK_METHODS" -v route_methods="$ROUTE_METHODS" -v follow_calls="$FOLLOW_CALLS" \
+  -v callback_methods="$CALLBACK_METHODS" -v route_methods="$ROUTE_METHODS" \
+  -v client_methods="$CLIENT_METHODS" -v components="$COMPONENTS" -v root_name="$NAME" -v follow_calls="$FOLLOW_CALLS" \
   "$AWK_PROG")
 
 # ---- assemble the HTML ---------------------------------------------------------
@@ -1027,7 +1124,7 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .gn text.f-endpoint{fill:var(--ep)}.gn text.f-event{fill:var(--ev)}.gn text.f-handler{fill:var(--hd)}.gn text.f-method{fill:var(--me)}.gn text.f-lambda{fill:var(--la)}.gn text.f-class{fill:var(--cl)}
 .gb{cursor:pointer}.gb rect{fill:var(--bg);stroke:var(--mute)}.gn .gb text{font-size:10.5px;font-weight:700;text-anchor:middle}.gb:hover rect{stroke:var(--acc);fill:var(--hi)}
 .gb.on rect{fill:var(--acc);stroke:var(--acc)}.gn .gb.on text{fill:#fff}
-.ge{fill:none;stroke-width:1.5;opacity:.8;transition:opacity .15s}.ge:hover{stroke-width:3}.ge.emits{stroke:var(--ev)}.ge.handled_by{stroke:var(--hd)}.ge.calls{stroke:var(--me);stroke-dasharray:5 3}.ge.via{stroke-dasharray:1.5 3}.ge.more{stroke:var(--line);stroke-dasharray:3 3}
+.ge{fill:none;stroke-width:1.5;opacity:.8;transition:opacity .15s}.ge:hover{stroke-width:3}.ge.emits{stroke:var(--ev)}.ge.handled_by{stroke:var(--hd)}.ge.calls{stroke:var(--me);stroke-dasharray:5 3}.ge.http{stroke:var(--ep);stroke-dasharray:9 3 2 3}.ge.via{stroke-dasharray:1.5 3}.ge.more{stroke:var(--line);stroke-dasharray:3 3}
 .gn,.gmore{transition:opacity .15s}#gvp.dim .gn:not(.hl),#gvp.dim .gmore{opacity:.28}#gvp.dim .ge:not(.hl){opacity:.08}#gvp.dim .ge.hl{stroke-width:2.6;opacity:1}
 .gmore{cursor:pointer}.gmore rect{fill:var(--panel);stroke:var(--mute);stroke-dasharray:3 3}.gmore text{fill:var(--mute);font-size:12px;text-anchor:middle}.gmore:hover rect{stroke:var(--acc)}
 #ghead .title .gsel{color:var(--acc)}#ghead .loc{min-height:18px}
@@ -1035,6 +1132,15 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .glegend{display:flex;gap:6px 24px;flex-wrap:wrap;justify-content:space-between;font-size:12px;color:var(--mute);margin-top:6px;align-items:center}.glegend>div{display:flex;gap:8px 10px;flex-wrap:wrap;align-items:center}.glegend span{white-space:nowrap}.glegend i{display:inline-block;width:16px;border-top:2px solid;vertical-align:middle;margin-right:4px}.glegend svg{vertical-align:middle;margin-right:4px}
 @media (max-width:800px){main{grid-template-columns:1fr;height:auto}aside{max-height:45vh}#detail.gview{display:block}#gwrap{height:65vh}}
 .h1sub{font-weight:400;color:var(--mute)}
+.badge.cmpb{color:var(--mute)}
+#csvg{width:100%;height:100%;display:block;cursor:grab;user-select:none;touch-action:none}#csvg.pan{cursor:grabbing}
+.cbx rect{fill:color-mix(in srgb,var(--ink) 3%,var(--panel));stroke:var(--line);stroke-width:1.5}.cbt{fill:var(--ink);font-weight:700;font-size:13px}
+.cn{cursor:pointer}.cn .box{fill:var(--panel);stroke-width:1.5}.cn:hover .box{fill:var(--hi)}.cn text{fill:var(--ink);font-size:12px}.cn text.gm{font-weight:600;font-size:12.5px}.cn text.gp{fill:var(--mute);font-size:10px}.cn text.ki{font-size:14px;font-weight:700}
+.cn text.f-endpoint{fill:var(--ep)}.cn text.f-event{fill:var(--ev)}.cn text.f-handler{fill:var(--hd)}.cn text.f-method{fill:var(--me)}.cn text.f-lambda{fill:var(--la)}.cn text.f-class{fill:var(--cl)}
+.cn.unr .box{stroke:var(--warn);stroke-dasharray:6 3}.cn.unr text{fill:var(--warn)}
+.ce{fill:none;stroke-width:1.6;opacity:.85;transition:opacity .15s}.ce:hover{stroke-width:3}.ce.event{stroke:var(--hd)}.ce.http{stroke:var(--ep);stroke-dasharray:9 3 2 3}
+#cvp.dim .cn:not(.hl){opacity:.3}#cvp.dim .ce:not(.hl){opacity:.08}#cvp.dim .ce.hl{stroke-width:2.6;opacity:1}
+.cbox{font-weight:700;margin-right:-6px}
 .badge.unrb{color:var(--warn)}#results li.unr>div>div:first-child,.nm.unr{color:var(--warn)}
 .gn.unr .box{stroke:var(--warn);stroke-dasharray:6 3;fill:color-mix(in srgb,var(--warn) 9%,var(--panel))}.gn.unr:hover .box,.gn.unr.ctr .box,.gn.unr.foc .box{fill:color-mix(in srgb,var(--warn) 14%,var(--hi))}
 .gn.unr text,.gn.unr text.ki{fill:var(--warn)}.gn.unr text.gp,.gn.unr text.gs{fill:color-mix(in srgb,var(--warn) 70%,var(--mute))}
@@ -1052,7 +1158,7 @@ cat <<'EOF_HTML_HEAD'
 <aside>
   <input id="q" placeholder="Search endpoint, event, class, method…   ( / )" autocomplete="off">
   <div id="chips"></div>
-  <div class="navtabs"><button id="tBrowse" class="on">Browse</button><button id="tGraph">Graph</button><button id="tIssues">Issues</button></div>
+  <div class="navtabs"><button id="tBrowse" class="on">Browse</button><button id="tGraph">Graph</button><button id="tConn" hidden title="Links between components (pom.xml folders)">Connectivity</button><button id="tIssues">Issues</button></div>
   <div id="count"></div>
   <ul id="results"></ul>
 </aside>
@@ -1083,7 +1189,7 @@ function akaHtml(n){const list=akaOf(n);if(!list.length)return'';
   ${aliasesOf(n).length?'<div class="help">Emits and listeners using any of these names are merged into this event.</div>':''}</div>`;}
 const KIND={endpoint:['🌐','Endpoint'],event:['⚡','Event'],handler:['🎧','Handler'],method:['ƒ','Method'],lambda:['λ','Lambda'],class:['◆','Class']};
 const ORDER=['endpoint','event','handler','lambda','method','class'];
-const FWD={emits:'emits',handled_by:'handled by',calls:'calls'},BWD={emits:'emitted by',handled_by:'triggered by',calls:'called by'};
+const FWD={emits:'emits',handled_by:'handled by',calls:'calls',http:'calls over HTTP'},BWD={emits:'emitted by',handled_by:'triggered by',calls:'called by',http:'called over HTTP by'};
 const enabled=new Set(ORDER);let selected=null,view='browse';
 $('#meta').textContent=`${DATA.meta.files} files · ${DATA.nodes.length} nodes · ${DATA.edges.length} links · generated ${DATA.meta.generated}`;
 // source location as plain text (file:line), easy to copy into the IDE
@@ -1104,6 +1210,14 @@ function spOf(n){if(!n||!n.file||!SP.size)return null;if(SPN.has(n.id))return SP
  SPN.set(n.id,r);return r;}
 function unrTag(n){return n.unres?'<span class="badge unrb" title="Not resolved by the scan: check by hand">unresolved</span>':'';}
 function spTag(n){const sp=spOf(n);return sp?`<span class="sptag" style="--sp:var(--sp${sp.i})" title="From the ${esc(sp.name)}/ folder">${esc(sp.name)}</span>`:'';}
+// components: folders holding a pom.xml; a node belongs to the deepest one above its file.
+// Events are left out (their constants often live in a shared module).
+const COMPS=(DATA.meta.components||[]).slice().sort((a,b)=>b.dir.length-a.dir.length),CMP=new Map();
+function compOf(n){if(!n||!n.file||n.kind==='event'||!COMPS.length)return null;if(CMP.has(n.id))return CMP.get(n.id);
+ const c=COMPS.find(c=>c.dir===''||n.file===c.dir||n.file.startsWith(c.dir+'/'));const r=c?c.name:null;CMP.set(n.id,r);return r;}
+const USED_COMPS=new Set(DATA.nodes.map(compOf).filter(Boolean)),MULTI=USED_COMPS.size>1;
+const HAS_HTTP=DATA.edges.some(e=>e[2]==='http');
+function cmpTag(n){const c=MULTI&&compOf(n);return c?`<span class="badge cmpb" title="Component (folder with a pom.xml)">▣ ${esc(c)}</span>`:'';}
 function sub(n){if(n.unres&&n.id.startsWith('unres:'))return (n.kind==='event'?'event name not known statically':'handler not found')+(n.file?' · '+n.file.split('/').pop()+':'+n.line:'');
  if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;
  if(n.kind==='event'){const e=(IN.get(n.id)||[]).filter(x=>x.k==='emits').length,h=(OUT.get(n.id)||[]).length;
@@ -1124,13 +1238,13 @@ $('#q').oninput=renderList;
 document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('#q')){e.preventDefault();$('#q').focus();$('#q').select();}});
 function go(id){location.hash=encodeURIComponent(id);}
 window.addEventListener('hashchange',fromHash);
-function fromHash(){const id=decodeURIComponent(location.hash.slice(1));if(id&&N.has(id)){if(view==='issues')setView('browse');select(id);}}
+function fromHash(){const id=decodeURIComponent(location.hash.slice(1));if(id&&N.has(id)){if(view==='issues'||view==='conn')setView('browse');select(id);}}
 // detail
 let dir='fwd',maxDepth=8;
 function select(id){selected=id;const n=N.get(id);renderList();
  if(view==='graph'){drawGraph(null,true);return;}
  const roles=(n.roles||[]).filter(r=>r!==n.kind).map(r=>`<span class="badge k-${r}">${r}</span>`).join(' ');
- $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${roles}</div>
+ $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${cmpTag(n)}${roles}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
  <div class="toolbar"><button class="btn" data-d="fwd">Trace forward ▶</button><button class="btn" data-d="bwd">◀ Trace back</button>
  <span class="sub">depth</span><select id="depth">${[2,3,4,6,8,12,20].map(d=>`<option ${d===maxDepth?'selected':''}>${d}</option>`).join('')}</select>
@@ -1186,7 +1300,7 @@ function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][
   if(!path.has(e.id))walk(e.id,depth+1,new Set([...path,e.id]));}};
  walk(id,0,new Set([id]));return lines.join('\n');}
 // issues
-function setView(v){view=v;$('#detail').classList.toggle('gview',v==='graph');['Browse','Graph','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
+function setView(v){view=v;$('#detail').classList.toggle('gview',v==='graph'||v==='conn');['Browse','Graph','Conn','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
 $('#tBrowse').onclick=()=>{setView('browse');selected?select(selected):null;};
 $('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
  else $('#detail').innerHTML='<div class="empty">Pick an item on the left to center the graph on it.</div>';};
@@ -1282,10 +1396,10 @@ function gShell(){const n=N.get(G.center);
  <button class="btn" id="gCollapse">Collapse all</button><button class="btn" id="gFit" title="Fit (F)">Fit</button>
  <label class="sub"><input type="checkbox" id="hideCalls" ${G.hide?'checked':''}> events only</label></div>
  <div class="help"><b>◂ / ▸</b> badges show or hide incoming / outgoing links · click a node to show it above (Esc or the background to go back) · drag to pan, scroll to zoom · <b>F</b> fit · <b>Esc</b> clear</div>
- <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls'].map(k=>
-  `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
+ <div id="gwrap"><svg id="gsvg" data-c="${esc(G.center)}"><defs>${['emits','handled_by','calls','http'].map(k=>
+  `<marker id="ar-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='emits'?'--ev':k==='handled_by'?'--hd':k==='http'?'--ep':'--me'})"/></marker>`).join('')}</defs><g id="gvp"></g></svg></div>
  <div class="glegend"><div>${shapes}<span class="unrl"><svg width="20" height="13"><rect x="1" y="1" width="18" height="11" rx="3"/></svg>unresolved</span>${[...SP].map(([d,o])=>`<span class="sptag" style="--sp:var(--sp${o.i})">${esc(d)}</span>`).join('')}</div><div><span><i style="border-color:var(--ev)"></i>emits</span><span><i style="border-color:var(--hd)"></i>handled by</span>
- <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span><span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div></div>`;
+ <span><i style="border-color:var(--me);border-top-style:dashed"></i>calls</span>${HAS_HTTP?'<span><i style="border-color:var(--ep);border-top-style:dashed"></i>HTTP</span>':''}<span><i style="border-color:var(--mute);border-top-style:dotted"></i>via calls (events only)</span></div></div>`;
  const expandAll=d=>{for(const id of G.pos.keys())if(N.has(id)&&uniqNext(id,d).length)G.open.add(id+'|'+d);drawGraph(null,true);};
  $('#gExpB').onclick=()=>expandAll('bwd');$('#gExpF').onclick=()=>expandAll('fwd');
  $('#gCollapse').onclick=()=>{G.open=new Set([G.center+'|bwd',G.center+'|fwd']);G.lim=new Map();drawGraph(null,true);};
@@ -1360,7 +1474,7 @@ function gHighlight(){const vp=$('#gvp');if(!vp)return;vp.querySelectorAll('.hl,
 // the top of the graph view describes the selected node, or the center when nothing is selected
 function gInfo(){const box=$('#ghead');if(!box)return;const n=N.get(G.focus||G.center),sel=!!G.focus&&G.focus!==G.center;
  const al=aliasesOf(n);
- box.innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
+ box.innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${cmpTag(n)}${sel?'<span class="badge gsel">selected</span>':'<span class="badge gsel">center</span>'}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}${al.length?` · <span class="alias" title="${esc(al.map(a=>a.name+' = '+a.to+(a.missing?' (target not found)':'')).join(' · '))}">≡ ${esc(al.map(a=>short(a.name)).join(', '))}</span>`:''}</div>`;}
 // "ClassName.member" on two lines: the owner small and grey above, the member below
 function nameHtml(n){const [own,mem]=splitName(n);return twoLines(own,mem);}
@@ -1376,6 +1490,81 @@ function gFit(){const svg=$('#gsvg'),W=svg.clientWidth||800,H=svg.clientHeight||
  const k=Math.min(1.1,W/(x1-x0+60),H/(y1-y0+60));G.auto=true;G.t={k,x:W/2-(x0+x1)/2*k,y:H/2-(y0+y1)/2*k};}
 function gApply(){$('#gvp').setAttribute('transform',`translate(${G.t.x},${G.t.y}) scale(${G.t.k})`);}
 $('#tIssues').onclick=()=>{setView('issues');drawIssues();};
+// ---------------------------------------------------------------- connectivity
+// Starting from every endpoint, follow the links (plain calls are walked through, even into a
+// shared module) and stop at the first item of ANOTHER component reached by an event (handled by)
+// or an HTTP call. Each item reached that way is followed in turn, so chains go on A -> B -> C.
+if(MULTI)$('#tConn').hidden=false;
+$('#tConn').onclick=()=>{setView('conn');drawConn();};
+let CONN=null;
+function connLinks(){if(CONN)return CONN;const links=new Map(),orig=[],seenO=new Set();
+ const addO=id=>{if(!seenO.has(id)){seenO.add(id);orig.push(id);}};
+ for(const n of DATA.nodes)if(n.kind==='endpoint'&&compOf(n))addO(n.id);
+ for(let i=0;i<orig.length;i++){const o=orig[i],oc=compOf(N.get(o)),seen=new Set([o]),q=[[o,null,null]];
+  while(q.length){const [cur,ev,first]=q.shift();
+   for(const e of OUT.get(cur)||[]){const m=N.get(e.id);if(!m||seen.has(e.id))continue;seen.add(e.id);const mc=compOf(m);
+    const via=e.k==='emits'?e.id:ev,hop=first||{f:e.f,l:e.l};
+    if((e.k==='http'||e.k==='handled_by')&&mc&&mc!==oc){const k=e.k==='http'?'http':'event',key=o+'>'+e.id+'>'+k;
+     const L=links.get(key)||links.set(key,{from:o,to:e.id,k,via:new Set(),at:{f:e.f,l:e.l}}).get(key);
+     if(k==='event'&&via)L.via.add(via);addO(e.id);continue;}
+    q.push([e.id,via,hop]);}}}
+ return CONN=[...links.values()];}
+const C={t:{x:0,y:0,k:1},auto:true,dragged:false,hl:null};
+function drawConn(){const links=connLinks();
+ const items=new Map();for(const l of links){for(const id of [l.from,l.to]){const c=compOf(N.get(id));(items.get(c)||items.set(c,new Set()).get(c)).add(id);}}
+ const comps=[...items.keys()].sort((a,b)=>a.localeCompare(b));
+ $('#detail').innerHTML=`<div class="title"><h2>Connectivity</h2><span class="sub">${comps.length} components · ${links.length} links</span></div>
+ <div class="help">Endpoints, and what they reach in other components: an event handled there, or an HTTP call matched to its endpoint (plain calls into shared modules are followed, not shown). Hover an item to see its links · click it to open it in the graph · drag to pan, scroll to zoom · <b>F</b> fit</div>
+ <div id="gwrap"><svg id="csvg"><defs>${['event','http'].map(k=>`<marker id="ca-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" style="fill:var(${k==='http'?'--ep':'--hd'})"/></marker>`).join('')}</defs><g id="cvp"></g></svg></div>
+ <div class="glegend"><div><span class="cbox">▣</span>component<span><svg width="20" height="13"><path class="s-endpoint" d="${shapeD('endpoint',20,13)}" style="fill:var(--panel);stroke-width:1.4"/></svg>endpoint</span></div>
+ <div><span><i style="border-color:var(--hd)"></i>event handled in another component</span><span><i style="border-color:var(--ep);border-top-style:dashed"></i>HTTP call</span></div></div>`;
+ if(!links.length){$('#gwrap').innerHTML='<div class="empty">No link between components found.</div>';return;}
+ // layout: one box per component on a grid, its items stacked inside
+ const IW=n=>Math.max(tw(splitName(n)[1]||n.label,'gm'),tw(connSub(n),'gp'))+54;
+ const box=new Map();
+ for(const c of comps){const ids=[...items.get(c)].sort((a,b)=>{const x=N.get(a),y=N.get(b);return (x.kind==='endpoint'?0:1)-(y.kind==='endpoint'?0:1)||x.label.localeCompare(y.label);});
+  const w=Math.min(380,Math.max(220,tw(c,'gm')+60,...ids.map(id=>IW(N.get(id))+24)));box.set(c,{ids,w,h:40+ids.length*46});}
+ const ncol=Math.min(4,Math.ceil(Math.sqrt(comps.length))),CG=150,RG=70,colW=[],rowH=[];
+ comps.forEach((c,i)=>{const b=box.get(c),col=i%ncol,row=Math.floor(i/ncol);b.col=col;b.row=row;colW[col]=Math.max(colW[col]||0,b.w);rowH[row]=Math.max(rowH[row]||0,b.h);});
+ const cx=[0],ry=[0];for(let i=1;i<colW.length;i++)cx[i]=cx[i-1]+colW[i-1]+CG;for(let i=1;i<rowH.length;i++)ry[i]=ry[i-1]+rowH[i-1]+RG;
+ const pos=new Map(),out=[];
+ for(const c of comps){const b=box.get(c);b.x=cx[b.col]+(colW[b.col]-b.w)/2;b.y=ry[b.row];
+  out.push(`<g class="cbx"><rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="12"/><text class="cbt" x="${b.x+14}" y="${b.y+22}">▣ ${esc(c)}</text></g>`);
+  b.ids.forEach((id,i)=>pos.set(id,{x:b.x+12,y:b.y+36+i*46,w:b.w-24,h:38,b}));}
+ // links, from the side facing the target (same column: both on the right, bulging out)
+ const edges=[];
+ for(const l of links){const a=pos.get(l.from),z=pos.get(l.to);if(!a||!z)continue;const ay=a.y+a.h/2,zy=z.y+z.h/2;let d;
+  if(z.b.x>a.b.x+1){const x1=a.b.x+a.b.w,x2=z.b.x,m=(x2-x1)/2;d=`M${a.x+a.w},${ay}L${x1},${ay}C${x1+m},${ay} ${x2-m},${zy} ${x2},${zy}L${z.x},${zy}`;}
+  else if(z.b.x<a.b.x-1){const x1=a.b.x,x2=z.b.x+z.b.w,m=(x1-x2)/2;d=`M${a.x},${ay}L${x1},${ay}C${x1-m},${ay} ${x2+m},${zy} ${x2},${zy}L${z.x+z.w},${zy}`;}
+  else{const x=a.b.x+a.b.w,o=60+Math.abs(zy-ay)*0.15;d=`M${a.x+a.w},${ay}L${x},${ay}C${x+o},${ay} ${x+o},${zy} ${x},${zy}L${z.x+z.w},${zy}`;}
+  const A=N.get(l.from),Z=N.get(l.to),via=[...l.via].map(v=>N.get(v)?.label).filter(Boolean);
+  const tip=`${compOf(A)}: ${A.label}\n${l.k==='http'?'calls over HTTP':'→ event '+via.join(', ')+' → handled by'}\n${compOf(Z)}: ${Z.label}${l.at.f?'\n'+l.at.f+':'+l.at.l:''}`;
+  edges.push(`<path class="ce ${l.k}" data-s="${esc(l.from)}" data-d="${esc(l.to)}" d="${d}" marker-end="url(#ca-${l.k})"><title>${esc(tip)}</title></path>`);}
+ const nodes=[];
+ for(const [id,p] of pos){const n=N.get(id),[own,mem]=splitName(n),room=p.w-50;
+  nodes.push(`<g class="cn${n.unres?' unr':''}" data-id="${esc(id)}" transform="translate(${p.x},${p.y})"><title>${esc(KIND[n.kind][1]+': '+n.label+(n.file?'\n'+n.file+':'+n.line:''))}</title>
+   <path class="box s-${n.kind}" d="${shapeD(n.kind,p.w,p.h)}"/><text class="ki f-${n.kind}" x="${n.kind==='endpoint'?13:11}" y="${p.h/2+5}">${KIND[n.kind][0]}</text>
+   <text class="gm" x="37" y="16">${esc(ell(mem||n.label,'gm',room))}</text><text class="gp" x="37" y="30">${esc(ell(connSub(n),'gp',room))}</text></g>`);}
+ $('#cvp').innerHTML=out.join('')+edges.join('')+nodes.join('');
+ C.auto=true;connFit();connWire();}
+function connSub(n){return n.kind==='endpoint'&&n.path?`${n.verb||'ANY'} ${n.path}`:(KIND[n.kind][1]+(splitName(n)[0]?' · '+splitName(n)[0]:''));}
+function connFit(){const svg=$('#csvg'),vp=$('#cvp');if(!svg||!vp)return;const b=vp.getBBox(),W=svg.clientWidth||800,H=svg.clientHeight||500;
+ const k=Math.min(1.1,W/(b.width+60),H/(b.height+60));C.t={k,x:W/2-(b.x+b.width/2)*k,y:H/2-(b.y+b.height/2)*k};connApply();}
+function connApply(){const vp=$('#cvp');if(vp)vp.setAttribute('transform',`translate(${C.t.x},${C.t.y}) scale(${C.t.k})`);}
+function connWire(){const svg=$('#csvg');let drag=null;
+ new ResizeObserver(()=>{if(C.auto&&$('#csvg')===svg)connFit();}).observe(svg);
+ svg.addEventListener('wheel',e=>{e.preventDefault();const r=svg.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  const k=Math.min(3,Math.max(0.12,C.t.k*Math.exp(-e.deltaY*0.0015)));C.t.x=mx-(mx-C.t.x)*k/C.t.k;C.t.y=my-(my-C.t.y)*k/C.t.k;C.t.k=k;C.auto=false;connApply();},{passive:false});
+ svg.addEventListener('pointerdown',e=>{if(e.target.closest('.cn'))return;drag={x:e.clientX,y:e.clientY,tx:C.t.x,ty:C.t.y,moved:false};svg.classList.add('pan');svg.setPointerCapture(e.pointerId);});
+ svg.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>4){drag.moved=true;C.auto=false;}C.t.x=drag.tx+dx;C.t.y=drag.ty+dy;connApply();});
+ const end=()=>{if(drag&&drag.moved){C.dragged=true;setTimeout(()=>C.dragged=false);}drag=null;svg.classList.remove('pan');};
+ svg.addEventListener('pointerup',end);svg.addEventListener('pointercancel',end);
+ const vp=$('#cvp');
+ svg.addEventListener('mouseover',e=>{const g=e.target.closest('.cn');const id=g?g.dataset.id:null;if(id===C.hl)return;C.hl=id;
+  vp.classList.toggle('dim',!!id);vp.querySelectorAll('.hl').forEach(x=>x.classList.remove('hl'));if(!id)return;g.classList.add('hl');
+  vp.querySelectorAll('.ce').forEach(p=>{if(p.dataset.s===id||p.dataset.d===id){p.classList.add('hl');const o=p.dataset.s===id?p.dataset.d:p.dataset.s;vp.querySelector(`.cn[data-id="${CSS.escape(o)}"]`)?.classList.add('hl');}});});
+ svg.addEventListener('click',e=>{if(C.dragged)return;const g=e.target.closest('.cn');if(!g)return;setView('graph');go(g.dataset.id);if(selected===g.dataset.id)select(selected);});}
+document.addEventListener('keydown',e=>{if(view==='conn'&&$('#csvg')&&(e.key==='f'||e.key==='F')&&!/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)){C.auto=true;connFit();}});
 function drawIssues(){const ev=DATA.nodes.filter(n=>n.kind==='event');
  const noL=ev.filter(n=>!(OUT.get(n.id)||[]).length),noE=ev.filter(n=>!(IN.get(n.id)||[]).some(e=>e.k==='emits'));
  const deadEp=DATA.nodes.filter(n=>n.kind==='endpoint'&&!(OUT.get(n.id)||[]).length);
