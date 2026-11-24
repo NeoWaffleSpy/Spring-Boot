@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.4"?>
+<plugin>
+
+   <extension point="org.eclipse.ui.commands">
+      <category id="com.eventmapper.eclipse.category" name="Event Mapper"/>
+      <command id="com.eventmapper.eclipse.export"
+               categoryId="com.eventmapper.eclipse.category"
+               name="Export Event Map"
+               description="Build the event map of the selected projects (all Java projects if none is selected)"/>
+   </extension>
+
+   <extension point="org.eclipse.ui.handlers">
+      <handler commandId="com.eventmapper.eclipse.export"
+               class="com.eventmapper.eclipse.ExportEventMapHandler"/>
+   </extension>
+
+   <extension point="org.eclipse.ui.menus">
+      <!-- Project > Export Event Map... -->
+      <menuContribution locationURI="menu:project?after=additions">
+         <command commandId="com.eventmapper.eclipse.export" label="Export Event Map..."/>
+      </menuContribution>
+      <!-- right-click on projects in the Package / Project Explorer -->
+      <menuContribution locationURI="popup:org.eclipse.ui.popup.any?after=additions">
+         <command commandId="com.eventmapper.eclipse.export" label="Export Event Map...">
+            <visibleWhen checkEnabled="false">
+               <with variable="activeMenuSelection">
+                  <and>
+                     <count value="+"/>
+                     <iterate ifEmpty="false" operator="and">
+                        <adapt type="org.eclipse.core.resources.IProject"/>
+                     </iterate>
+                  </and>
+               </with>
+            </visibleWhen>
+         </command>
+      </menuContribution>
+   </extension>
+
+</plugin>
