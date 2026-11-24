@@ -223,14 +223,8 @@ public class EventMapView extends ViewPart {
         } catch (OperationCanceledException e) {
             return Status.CANCEL_STATUS;
         } catch (Throwable e) {
-            log(IStatus.ERROR, "Event map failed: " + e, e);
-            Display.getDefault().asyncExec(() -> {
-                if (browser != null && !browser.isDisposed()) {
-                    browser.setText(message("The event map could not be built: " + e + "<br><br>Details are in the Error Log view."));
-                    pageLoaded = false;
-                }
-            });
-            return Status.OK_STATUS; // already reported
+            Display.getDefault().asyncExec(() -> showError("The event map could not be built", e));
+            return Status.OK_STATUS; // reported in the view and the Error Log
         } finally {
             monitor.done();
         }
@@ -241,6 +235,31 @@ public class EventMapView extends ViewPart {
         if (browser == null || browser.isDisposed() || m != model) {
             return;
         }
+        try {
+            showPage(title, json);
+        } catch (Throwable e) { // shown in the view rather than as an event loop error
+            showError("The event map could not be shown", e);
+        }
+    }
+
+    private void showError(String what, Throwable e) {
+        log(IStatus.ERROR, what + ": " + e, e);
+        if (browser != null && !browser.isDisposed()) {
+            Throwable root = e;
+            while (root.getCause() != null && root.getCause() != root) {
+                root = root.getCause();
+            }
+            browser.setText(message(escape(what) + ":<br><br><b>" + escape(String.valueOf(root)) + "</b>"
+                    + "<br><br>Details are in the Error Log view (Window &gt; Show View &gt; General &gt; Error Log)."));
+            pageLoaded = false;
+        }
+    }
+
+    private static String escape(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    private void showPage(String title, String json) {
         String state = null;
         if (pageLoaded) {
             try {

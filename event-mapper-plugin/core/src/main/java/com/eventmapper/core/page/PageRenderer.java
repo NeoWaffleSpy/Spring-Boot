@@ -4,6 +4,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.security.CodeSource;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Builds the event map page around a graph JSON. The page is {@code event-map.html} next to this
@@ -12,7 +15,9 @@ import java.nio.charset.StandardCharsets;
  */
 public final class PageRenderer {
 
-    private static final String TEMPLATE = load();
+    private static final String RESOURCE = "com/eventmapper/core/page/event-map.html";
+    /** loaded on first use, so a missing template is a clear error instead of a failed class */
+    private static volatile String template;
 
     private PageRenderer() {
     }
@@ -34,7 +39,7 @@ public final class PageRenderer {
     }
 
     private static String fill(String title, String data) {
-        String page = TEMPLATE.replace("{{TITLE}}", escape(title));
+        String page = template().replace("{{TITLE}}", escape(title));
         int at = page.indexOf("{{DATA}}");
         return page.substring(0, at) + data + page.substring(at + "{{DATA}}".length());
     }
@@ -43,14 +48,46 @@ public final class PageRenderer {
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
     }
 
+    private static String template() {
+        String t = template;
+        if (t == null) {
+            t = load();
+            template = t;
+        }
+        return t;
+    }
+
+    /** Reads the template next to this class: through the class, then its class loader, then the thread's. */
     private static String load() {
-        try (InputStream in = PageRenderer.class.getResourceAsStream("event-map.html")) {
-            if (in == null) {
-                throw new IllegalStateException("event-map.html is missing from the core jar");
+        List<InputStream> tried = new ArrayList<>();
+        try {
+            InputStream in = PageRenderer.class.getResourceAsStream("/" + RESOURCE);
+            ClassLoader own = PageRenderer.class.getClassLoader();
+            if (in == null && own != null) {
+                in = own.getResourceAsStream(RESOURCE);
             }
+            ClassLoader thread = Thread.currentThread().getContextClassLoader();
+            if (in == null && thread != null) {
+                in = thread.getResourceAsStream(RESOURCE);
+            }
+            if (in == null) {
+                CodeSource src = PageRenderer.class.getProtectionDomain().getCodeSource();
+                throw new IllegalStateException("The page template " + RESOURCE + " is not in the core jar ("
+                        + (src == null ? "unknown location" : src.getLocation())
+                        + "). Rebuild it with `mvn package` in event-mapper-plugin/core.");
+            }
+            tried.add(in);
             return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        } finally {
+            for (InputStream in : tried) {
+                try {
+                    in.close();
+                } catch (IOException ignored) {
+                    // nothing to do
+                }
+            }
         }
     }
 }
