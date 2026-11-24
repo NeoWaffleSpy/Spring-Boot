@@ -33,8 +33,8 @@ import java.util.TreeMap;
 
 /**
  * Project &gt; Export Event Map...: maps the selected Java projects (all open Java projects when
- * none is selected) in a background job and writes the map as an HTML page (the same page as
- * {@code Event_mapper.sh}) or as JSON, depending on the file name chosen.
+ * none is selected) in a background job and writes the map as an HTML page (the page of the Event
+ * Map view, without the IDE links) or as JSON, depending on the file name chosen.
  */
 public class ExportEventMapHandler extends AbstractHandler {
 

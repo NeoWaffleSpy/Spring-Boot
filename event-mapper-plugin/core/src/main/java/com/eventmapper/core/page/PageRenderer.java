@@ -6,8 +6,9 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Builds the event map page (the same page {@code Event_mapper.sh} writes) around a graph JSON.
- * The template is generated from the script by {@code core/extract-page.sh}.
+ * Builds the event map page around a graph JSON. The page is {@code event-map.html} next to this
+ * class (it started as a copy of the page {@code Event_mapper.sh} writes, and is now edited here):
+ * {@code {{TITLE}}} is replaced by the title, {@code {{DATA}}} by the JSON.
  */
 public final class PageRenderer {
 

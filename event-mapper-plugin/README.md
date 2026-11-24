@@ -18,10 +18,11 @@ and object types). Each IDE implements it once; the rules are shared.
 
 ### The page
 
-The page lives in `Event_mapper.sh` (single source of truth). `core/extract-page.sh` copies it into
-`core/src/main/resources/com/eventmapper/core/page/event-map.html`; run it after changing the page in
-the script, then rebuild core. Inside an IDE the page gets clickable source locations and keeps its
-view (selection, graph, zoom, moved nodes) across refreshes; in a browser it behaves as before.
+The plug-in's page is `core/src/main/resources/com/eventmapper/core/page/event-map.html` (HTML, CSS
+and JavaScript in one file; `{{TITLE}}` and `{{DATA}}` are filled in by `PageRenderer`). It started as
+a copy of the page `Event_mapper.sh` writes and is now independent of the script: edit it there, then
+rebuild core. Inside an IDE the page gets clickable source locations and keeps its view (selection,
+graph, zoom, moved nodes) across refreshes; exported as a file it works in any browser.
 
 ## Eclipse plug-in
 

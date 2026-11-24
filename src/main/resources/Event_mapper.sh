@@ -1097,7 +1097,6 @@ aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-
 .title{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.title h2{margin:0;font-size:19px;word-break:break-all}
 .badge{font-size:11px;border-radius:4px;padding:1px 7px;border:1px solid currentColor}
 .lnk{color:var(--mute);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-.host .lnk{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}.host .lnk:hover{color:var(--acc)}
 .toolbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:16px 0 10px}
 .toolbar select{font:inherit;font-size:12px;padding:3px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
 .tree,.tree ul{list-style:none;margin:0;padding-left:18px}.tree{padding-left:0}
@@ -1177,8 +1176,6 @@ cat <<'EOF_HTML_TAIL'
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-// shown inside an IDE plug-in (which sets EVMAP_HOST): source locations become clickable
-const HOST=!!window.EVMAP_HOST;if(HOST)document.body.classList.add('host');
 const N=new Map(DATA.nodes.map(n=>[n.id,n])),OUT=new Map(),IN=new Map();
 for(const [s,d,k,f,l,a] of DATA.edges){(OUT.get(s)||OUT.set(s,[]).get(s)).push({id:d,k,f,l,a});(IN.get(d)||IN.set(d,[]).get(d)).push({id:s,k,f,l,a});}
 // constant names of an event; "to" is set when the constant is an alias of another constant
@@ -1198,7 +1195,7 @@ const enabled=new Set(ORDER);let selected=null,view='browse';
 $('#meta').textContent=`${DATA.meta.files} files · ${DATA.nodes.length} nodes · ${DATA.edges.length} links · generated ${DATA.meta.generated}`;
 // source location as plain text (file:line), easy to copy into the IDE
 function link(file,abs,line,text){if(!file)return'';
- return `<span class="lnk" data-f="${esc(abs||absOf(file))}" data-l="${line}" title="${esc(file)}:${line}${HOST?' (click to open)':''}">${wb(text||(file.split('/').pop()+':'+line))}</span>`;}
+ return `<span class="lnk" title="${esc(file)}:${line}">${wb(text||(file.split('/').pop()+':'+line))}</span>`;}
 function ic(n){const k=KIND[n.kind]||['?',''];return `<span class="ic k-${n.kind}" title="${k[1]}">${k[0]}</span>`;}
 // SPECIAL_DIRS: name=colour (graph: tag on the bottom edge, the top corners hold the badges). Each gets --spN (tuned per theme); a node belongs to the first
 // listed folder found in its file path.
@@ -1641,32 +1638,7 @@ function drawIssues(){const ev=DATA.nodes.filter(n=>n.kind==='event');
  <div class="section"><h3>Unresolved emissions / handlers (${DATA.unresolved.length})</h3><div class="help">Event name not statically known (variable) or handler not found. Add a pattern to the config, or check by hand.</div>
  ${DATA.unresolved.length?`<table>${DATA.unresolved.map(u=>`<tr><td>${link(u.file,absOf(u.file),u.line,u.file+':'+u.line)}</td><td><code>${esc(u.text)}</code></td></tr>`).join('')}</table>`:'<div class="sub">none 🎉</div>'}</div>
  <div class="section"><h3>Endpoints with no detected chain (${deadEp.length})</h3>${lst(deadEp)}</div>`;}
-// ---- IDE plug-ins ------------------------------------------------------------------------
-// A plug-in showing this page defines evmapOpen(file,line) to open a source, calls
-// evmapReveal(id) to follow the editor, and keeps the view across refreshes by reading
-// evmapState() and passing it back as EVMAP_RESTORE in the refreshed page. Inert in a browser.
-const openSrc=(f,l)=>{if(HOST&&f&&typeof window.evmapOpen==='function')window.evmapOpen(String(f),Number(l)||1);};
-document.addEventListener('click',e=>{const l=HOST&&e.target.closest('.lnk[data-f]');if(l){e.preventDefault();e.stopPropagation();openSrc(l.dataset.f,l.dataset.l);}},true);
-document.addEventListener('dblclick',e=>{const g=e.target.closest('.gn[data-id],.cn[data-id]'),n=g&&N.get(g.dataset.id);if(n&&n.file)openSrc(n.abs||absOf(n.file),n.line);});
-window.evmapReveal=id=>{if(!N.has(id))return false;if(id!==selected){if(view==='issues'||view==='conn')setView('browse');go(id);}return true;};
-window.evmapState=()=>JSON.stringify({view,selected,q:$('#q').value,dir,maxDepth,
- g:{open:[...G.open],lim:[...G.lim],moved:[...G.moved],t:G.t,auto:G.auto},c:{t:C.t,auto:C.auto},
- scroll:[$('#results').scrollTop,($('#detail')||{}).scrollTop||0]});
-function evmapRestore(s){
- $('#q').value=s.q||'';if(s.dir)dir=s.dir;if(s.maxDepth)maxDepth=s.maxDepth;
- if(s.selected&&N.has(s.selected)){selected=s.selected;history.replaceState(null,'','#'+encodeURIComponent(selected));}
- renderList();
- const v=s.view==='conn'&&$('#tConn').hidden?'browse':s.view;
- if(v==='graph'&&selected){setView('graph');G.center=selected;
-  G.open=new Set((s.g.open||[]).filter(k=>N.has(keyId(k))));G.lim=new Map(s.g.lim||[]);G.moved=new Map((s.g.moved||[]).filter(([id])=>N.has(id)));
-  drawGraph(null,true);if(!s.g.auto&&s.g.t){G.t=s.g.t;G.auto=false;gApply();}}
- else if(v==='conn'){setView('conn');drawConn();if(!s.c.auto&&s.c.t){C.t=s.c.t;C.auto=false;connApply();}}
- else if(v==='issues'){setView('issues');drawIssues();}
- else if(v==='graph'){$('#tGraph').onclick();}
- else{setView('browse');if(selected)select(selected);}
- if(s.scroll){$('#results').scrollTop=s.scroll[0];if($('#detail'))$('#detail').scrollTop=s.scroll[1];}}
-renderList();
-if(window.EVMAP_RESTORE){try{evmapRestore(window.EVMAP_RESTORE);}catch(e){console.error(e);fromHash();}}else fromHash();
+renderList();fromHash();
 </script></body></html>
 EOF_HTML_TAIL
 }

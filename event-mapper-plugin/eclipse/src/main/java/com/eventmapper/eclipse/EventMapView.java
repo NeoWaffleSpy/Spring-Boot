@@ -52,7 +52,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * The Event Map view: the event map page of {@code Event_mapper.sh}, live. It maps the chosen Java
+ * The Event Map view: the event map page (core's {@code PageRenderer}), live. It maps the chosen Java
  * projects (all open ones by default), refreshes on its own a moment after Java files are saved
  * (re-parsing only what changed), opens sources when a location is clicked (or a graph node is
  * double-clicked), and can follow the editor: the method under the cursor is shown in the map.
