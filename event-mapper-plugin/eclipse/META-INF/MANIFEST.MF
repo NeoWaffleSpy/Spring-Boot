@@ -2,14 +2,19 @@ Manifest-Version: 1.0
 Bundle-ManifestVersion: 2
 Bundle-Name: Event Mapper
 Bundle-SymbolicName: com.eventmapper.eclipse;singleton:=true
-Bundle-Version: 0.1.0.qualifier
+Bundle-Version: 0.2.0.qualifier
 Bundle-Vendor: Event Mapper
 Automatic-Module-Name: com.eventmapper.eclipse
 Bundle-RequiredExecutionEnvironment: JavaSE-17
 Bundle-ActivationPolicy: lazy
 Require-Bundle: org.eclipse.ui,
+ org.eclipse.ui.ide,
+ org.eclipse.ui.workbench.texteditor,
+ org.eclipse.jface.text,
+ org.eclipse.text,
  org.eclipse.core.runtime,
  org.eclipse.core.resources,
- org.eclipse.jdt.core
+ org.eclipse.jdt.core,
+ org.eclipse.jdt.ui
 Bundle-ClassPath: .,
  lib/event-mapper-core.jar

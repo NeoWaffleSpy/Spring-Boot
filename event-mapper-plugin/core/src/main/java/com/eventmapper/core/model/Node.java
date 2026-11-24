@@ -9,6 +9,13 @@ import java.util.List;
  */
 public final class Node {
 
+    /**
+     * A constant naming an event: {@code String CREATED = "order.created"} ({@code to} null), or an
+     * alias {@code String NEW = Events.CREATED} ({@code to} = "Events.CREATED").
+     */
+    public record Aka(String name, String to, String file, int line, boolean missing) {
+    }
+
     public final String id;
     /** endpoint, event, handler, lambda, method or class (a method becomes a handler once it handles an event) */
     public String kind;
@@ -24,8 +31,8 @@ public final class Node {
     public String path;
     /** endpoint verb (GET, POST, ANY...), or null */
     public String verb;
-    /** other names the event is known by in the code */
-    public final List<String> aka = new ArrayList<>();
+    /** the String constants that hold the event's name (aliases included) */
+    public final List<Aka> aka = new ArrayList<>();
     /** event name, or null */
     public String value;
     /** true when the code could not be resolved (drawn in red) */

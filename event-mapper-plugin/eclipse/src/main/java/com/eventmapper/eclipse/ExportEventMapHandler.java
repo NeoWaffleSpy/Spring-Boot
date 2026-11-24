@@ -5,40 +5,36 @@ import com.eventmapper.core.MapperConfig;
 import com.eventmapper.core.json.GraphJsonWriter;
 import com.eventmapper.core.model.Graph;
 import com.eventmapper.core.model.Node;
+import com.eventmapper.core.page.PageRenderer;
 import org.eclipse.core.commands.AbstractHandler;
 import org.eclipse.core.commands.ExecutionEvent;
-import org.eclipse.core.resources.IProject;
-import org.eclipse.core.resources.ResourcesPlugin;
-import org.eclipse.core.runtime.Adapters;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.OperationCanceledException;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
 import org.eclipse.core.runtime.jobs.Job;
 import org.eclipse.jdt.core.IJavaProject;
-import org.eclipse.jdt.core.JavaCore;
+import org.eclipse.jface.dialogs.ErrorDialog;
 import org.eclipse.jface.dialogs.MessageDialog;
-import org.eclipse.jface.viewers.ISelection;
-import org.eclipse.jface.viewers.IStructuredSelection;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.FileDialog;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.ui.handlers.HandlerUtil;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 
 /**
  * Project &gt; Export Event Map...: maps the selected Java projects (all open Java projects when
- * none is selected) in a background job and writes the event map JSON.
+ * none is selected) in a background job and writes the map as an HTML page (the same page as
+ * {@code Event_mapper.sh}) or as JSON, depending on the file name chosen.
  */
 public class ExportEventMapHandler extends AbstractHandler {
 
@@ -47,43 +43,53 @@ public class ExportEventMapHandler extends AbstractHandler {
     @Override
     public Object execute(ExecutionEvent event) {
         Shell shell = HandlerUtil.getActiveShell(event);
-        List<IJavaProject> projects = projects(HandlerUtil.getCurrentSelection(event));
+        List<IJavaProject> projects = Projects.selectedOrAll(HandlerUtil.getCurrentSelection(event));
         if (projects.isEmpty()) {
             MessageDialog.openInformation(shell, "Event Mapper", "There is no open Java project to map.");
             return null;
         }
-        IPath root = commonRoot(projects);
-        String name = projects.size() == 1 ? projects.get(0).getElementName() : root.lastSegment();
+        IPath root = Projects.commonRoot(projects);
+        String name = Projects.name(projects, root);
 
         FileDialog dialog = new FileDialog(shell, SWT.SAVE);
         dialog.setText("Export Event Map");
-        dialog.setFilterExtensions(new String[]{"*.json"});
+        dialog.setFilterExtensions(new String[]{"*.html", "*.json"});
+        dialog.setFilterNames(new String[]{"Event map page (*.html)", "Event map data (*.json)"});
         dialog.setFilterPath(root.toOSString());
-        dialog.setFileName((name == null ? "event-map" : name) + ".json");
+        dialog.setFileName(name + ".html");
         dialog.setOverwrite(true);
         String target = dialog.open();
         if (target == null) {
             return null;
         }
         Path out = Path.of(target);
+        boolean html = !target.toLowerCase().endsWith(".json");
+        log(IStatus.INFO, "Export started: " + projects.size() + " project(s) under " + root.toOSString() + " -> " + out, null);
 
         Job job = new Job("Building event map") {
             @Override
             protected IStatus run(IProgressMonitor monitor) {
                 monitor.beginTask("Building event map", IProgressMonitor.UNKNOWN);
                 try {
-                    Graph graph = new EventMapper(MapperConfig.defaults()).analyse(new JdtCodeModel(projects, root, monitor));
-                    Files.writeString(out, GraphJsonWriter.write(graph), StandardCharsets.UTF_8);
+                    JdtCodeModel model = new JdtCodeModel(projects, root);
+                    model.setMonitor(monitor);
+                    Graph graph = new EventMapper(MapperConfig.defaults()).analyse(model);
+                    String json = GraphJsonWriter.write(graph);
+                    Files.writeString(out, html ? PageRenderer.render(name, json) : json, StandardCharsets.UTF_8);
                     String summary = summary(graph, out);
-                    Display.getDefault().asyncExec(() -> MessageDialog.openInformation(shell, "Event Mapper", summary));
-                    return Status.OK_STATUS;
+                    log(IStatus.INFO, summary.replace('\n', ' '), null);
+                    show(shell, () -> MessageDialog.openInformation(shell, "Event Mapper", summary));
                 } catch (OperationCanceledException e) {
+                    log(IStatus.INFO, "Export cancelled", null);
                     return Status.CANCEL_STATUS;
-                } catch (IOException | RuntimeException e) {
-                    return new Status(IStatus.ERROR, PLUGIN_ID, "Event map failed: " + e.getMessage(), e);
+                } catch (Throwable e) { // Errors too (NoClassDefFoundError...), so nothing fails silently
+                    IStatus error = log(IStatus.ERROR, "Event map failed: " + e, e);
+                    show(shell, () -> ErrorDialog.openError(shell, "Event Mapper", "The event map could not be built.", error));
                 } finally {
                     monitor.done();
                 }
+                // failures are already logged and shown; an ERROR result would show a second dialog
+                return Status.OK_STATUS;
             }
         };
         job.setUser(true); // shows the progress dialog, which can be sent to the background
@@ -91,53 +97,17 @@ public class ExportEventMapHandler extends AbstractHandler {
         return null;
     }
 
-    /** The Java projects in the selection, or every open Java project when none is selected. */
-    private static List<IJavaProject> projects(ISelection selection) {
-        List<IJavaProject> out = new ArrayList<>();
-        if (selection instanceof IStructuredSelection s) {
-            for (Object o : s.toList()) {
-                IProject p = Adapters.adapt(o, IProject.class);
-                if (p != null && javaProject(p) != null && !out.contains(javaProject(p))) {
-                    out.add(javaProject(p));
-                }
-            }
-        }
-        if (out.isEmpty()) {
-            for (IProject p : ResourcesPlugin.getWorkspace().getRoot().getProjects()) {
-                IJavaProject jp = javaProject(p);
-                if (jp != null) {
-                    out.add(jp);
-                }
-            }
-        }
-        return out;
+    /** Writes to the Error Log view (Window > Show View > General > Error Log). */
+    private static IStatus log(int severity, String message, Throwable e) {
+        IStatus status = new Status(severity, PLUGIN_ID, message, e);
+        Platform.getLog(ExportEventMapHandler.class).log(status);
+        return status;
     }
 
-    private static IJavaProject javaProject(IProject p) {
-        try {
-            return p.isOpen() && p.hasNature(JavaCore.NATURE_ID) ? JavaCore.create(p) : null;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /** The deepest folder holding every project (the project itself when there is one). */
-    private static IPath commonRoot(List<IJavaProject> projects) {
-        IPath root = null;
-        for (IJavaProject p : projects) {
-            IPath loc = p.getProject().getLocation();
-            if (loc == null) {
-                continue;
-            }
-            if (root == null) {
-                root = loc;
-            } else {
-                int n = root.matchingFirstSegments(loc);
-                root = root.uptoSegment(n);
-            }
-        }
-        // projects with nothing in common (other drives...): fall back to the workspace folder
-        return root == null || root.segmentCount() == 0 ? ResourcesPlugin.getWorkspace().getRoot().getLocation() : root;
+    /** Runs a dialog on the UI thread, on the original window if it is still open. */
+    private static void show(Shell shell, Runnable dialog) {
+        Display display = shell != null && !shell.isDisposed() ? shell.getDisplay() : Display.getDefault();
+        display.asyncExec(dialog);
     }
 
     private static String summary(Graph g, Path out) {

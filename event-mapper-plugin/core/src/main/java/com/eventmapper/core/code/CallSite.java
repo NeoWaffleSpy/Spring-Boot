@@ -8,6 +8,7 @@ import java.util.List;
  * @param methodName   name of the called method ({@code emit})
  * @param receiverType qualified type of the receiver ({@code com.shop.EventBus}), or {@code null}
  *                     when there is no receiver or its type is unknown
+ * @param receiver     source text of the receiver ({@code bus}, {@code webClient.get()}), or {@code null}
  * @param arguments    the call's arguments, in order
  * @param enclosing    the method the call is written in, or {@code null} (field initialiser...)
  * @param lambda       start of the innermost lambda (inside {@code enclosing}) the call is written in,
@@ -15,11 +16,17 @@ import java.util.List;
  *                     lambda is passed to a call, which is how lambda handlers get their events
  * @param location     where the call is
  */
-public record CallSite(String methodName, String receiverType, List<Argument> arguments,
+public record CallSite(String methodName, String receiverType, String receiver, List<Argument> arguments,
                        MethodRef enclosing, SourceLocation lambda, SourceLocation location) {
 
     public CallSite {
         arguments = List.copyOf(arguments);
+    }
+
+    /** Without the receiver's text. */
+    public CallSite(String methodName, String receiverType, List<Argument> arguments,
+                    MethodRef enclosing, SourceLocation lambda, SourceLocation location) {
+        this(methodName, receiverType, null, arguments, enclosing, lambda, location);
     }
 
     public Argument argument(int i) {

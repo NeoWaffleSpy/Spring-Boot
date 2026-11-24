@@ -54,7 +54,11 @@ public final class GraphJsonWriter {
         b.append("],\"path\":").append(n.path == null ? "null" : str(n.path))
          .append(",\"verb\":").append(n.verb == null ? "null" : str(n.verb))
          .append(",\"aka\":[");
-        sep(b, n.aka, (x, a) -> x.append(str(a)));
+        sep(b, n.aka, (x, a) -> x.append("{\"name\":").append(str(a.name()))
+                .append(",\"to\":").append(a.to() == null ? "null" : str(a.to()))
+                .append(",\"file\":").append(str(a.file() == null ? "" : a.file()))
+                .append(",\"line\":").append(a.line())
+                .append(",\"missing\":").append(a.missing()).append('}'));
         b.append("],\"value\":").append(n.value == null ? "null" : str(n.value))
          .append(",\"unres\":").append(n.unres).append('}');
     }
