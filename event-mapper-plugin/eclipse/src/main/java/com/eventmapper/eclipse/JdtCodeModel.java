@@ -20,6 +20,8 @@ import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.IMember;
 import org.eclipse.jdt.core.IMethod;
+import org.eclipse.jdt.core.IPackageFragment;
+import org.eclipse.jdt.core.IPackageFragmentRoot;
 import org.eclipse.jdt.core.ISourceRange;
 import org.eclipse.jdt.core.IType;
 import org.eclipse.jdt.core.JavaCore;
@@ -152,6 +154,43 @@ final class JdtCodeModel implements CodeModel {
         lineStarts.clear();
     }
 
+    /** How many results each kind of query gave in the current analysis, for the Error Log. */
+    private final Map<String, Integer> stats = new LinkedHashMap<>();
+
+    synchronized void resetStats() {
+        stats.clear();
+    }
+
+    synchronized Map<String, Integer> stats() {
+        return new LinkedHashMap<>(stats);
+    }
+
+    private void count(String what, int n) {
+        stats.merge(what, n, Integer::sum);
+    }
+
+    /** Number of Java files in the source folders of the mapped projects, as JDT sees them. */
+    synchronized int sourceFileCount() {
+        int n = 0;
+        for (IJavaProject p : projects) {
+            try {
+                for (IPackageFragmentRoot root : p.getPackageFragmentRoots()) {
+                    if (root.getKind() != IPackageFragmentRoot.K_SOURCE) {
+                        continue;
+                    }
+                    for (IJavaElement child : root.getChildren()) {
+                        if (child instanceof IPackageFragment pkg) {
+                            n += pkg.getCompilationUnits().length;
+                        }
+                    }
+                }
+            } catch (JavaModelException e) {
+                // project not usable: counts as none
+            }
+        }
+        return n;
+    }
+
     @Override
     public String rootPath() {
         return root.toPortableString();
@@ -169,7 +208,7 @@ final class JdtCodeModel implements CodeModel {
     @Override
     public synchronized List<CallSite> findCalls(Set<String> methodNames) {
         Map<ICompilationUnit, List<SearchMatch>> matches = search(methodNames, IJavaSearchConstants.METHOD);
-        return perFile("calls:" + new TreeSet<>(methodNames), matches, (cu, ast, ms, deps) -> {
+        List<CallSite> found = perFile("calls:" + new TreeSet<>(methodNames), matches, (cu, ast, ms, deps) -> {
             List<CallSite> out = new ArrayList<>();
             for (SearchMatch m : ms) {
                 ASTNode node = NodeFinder.perform(ast, m.getOffset(), m.getLength());
@@ -180,12 +219,16 @@ final class JdtCodeModel implements CodeModel {
             }
             return out;
         });
+        for (CallSite c : found) {
+            count(c.methodName() + "()", 1);
+        }
+        return found;
     }
 
     @Override
     public synchronized List<AnnotatedMethod> findAnnotatedMethods(Set<String> annotationNames) {
         Map<ICompilationUnit, List<SearchMatch>> matches = search(annotationNames, IJavaSearchConstants.ANNOTATION_TYPE);
-        return perFile("annotations:" + new TreeSet<>(annotationNames), matches, (cu, ast, ms, deps) -> {
+        List<AnnotatedMethod> found = perFile("annotations:" + new TreeSet<>(annotationNames), matches, (cu, ast, ms, deps) -> {
             List<AnnotatedMethod> out = new ArrayList<>();
             Set<MethodDeclaration> done = new HashSet<>();
             for (SearchMatch m : ms) {
@@ -204,6 +247,14 @@ final class JdtCodeModel implements CodeModel {
             }
             return out;
         });
+        for (AnnotatedMethod m : found) {
+            for (AnnotatedMethod.Annotation a : m.annotations()) {
+                if (annotationNames.contains(a.name())) {
+                    count("@" + a.name(), 1);
+                }
+            }
+        }
+        return found;
     }
 
     @Override
@@ -229,7 +280,7 @@ final class JdtCodeModel implements CodeModel {
             return List.of();
         }
         Map<ICompilationUnit, List<SearchMatch>> matches = search(or(patterns));
-        return perFile("callers:" + method.id(), matches, (cu, ast, ms, deps) -> {
+        List<CallSite> found = perFile("callers:" + method.id(), matches, (cu, ast, ms, deps) -> {
             List<CallSite> out = new ArrayList<>();
             for (SearchMatch m : ms) {
                 ASTNode node = NodeFinder.perform(ast, m.getOffset(), m.getLength());
@@ -241,6 +292,8 @@ final class JdtCodeModel implements CodeModel {
             }
             return out;
         });
+        count("followed calls", found.size());
+        return found;
     }
 
     // ---- search and per-file cache ------------------------------------------------------

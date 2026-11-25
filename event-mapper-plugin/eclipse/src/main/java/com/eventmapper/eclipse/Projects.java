@@ -20,6 +20,12 @@ final class Projects {
 
     /** The Java projects in the selection, or every open Java project when none is selected. */
     static List<IJavaProject> selectedOrAll(ISelection selection) {
+        List<IJavaProject> out = selected(selection);
+        return out.isEmpty() ? allJava() : out;
+    }
+
+    /** The Java projects in the selection (possibly none). */
+    static List<IJavaProject> selected(ISelection selection) {
         List<IJavaProject> out = new ArrayList<>();
         if (selection instanceof IStructuredSelection s) {
             for (Object o : s.toList()) {
@@ -30,11 +36,45 @@ final class Projects {
                 }
             }
         }
-        if (out.isEmpty()) {
-            for (IProject p : ResourcesPlugin.getWorkspace().getRoot().getProjects()) {
-                IJavaProject jp = javaProject(p);
-                if (jp != null) {
-                    out.add(jp);
+        return out;
+    }
+
+    /** Every open Java project of the workspace. */
+    static List<IJavaProject> all() {
+        return allJava();
+    }
+
+    private static List<IJavaProject> allJava() {
+        List<IJavaProject> out = new ArrayList<>();
+        for (IProject p : ResourcesPlugin.getWorkspace().getRoot().getProjects()) {
+            IJavaProject jp = javaProject(p);
+            if (jp != null) {
+                out.add(jp);
+            }
+        }
+        return out;
+    }
+
+    /** The open Java projects whose folder is inside this folder (or is it). */
+    static List<IJavaProject> under(IPath folder) {
+        List<IJavaProject> out = new ArrayList<>();
+        for (IJavaProject p : all()) {
+            IPath loc = p.getProject().getLocation();
+            if (loc != null && folder.isPrefixOf(loc)) {
+                out.add(p);
+            }
+        }
+        return out;
+    }
+
+    /** Open Java projects with these names, in that order; unknown names are skipped. */
+    static List<IJavaProject> named(List<String> names) {
+        List<IJavaProject> out = new ArrayList<>();
+        List<IJavaProject> all = all();
+        for (String n : names) {
+            for (IJavaProject p : all) {
+                if (p.getElementName().equals(n) && !out.contains(p)) {
+                    out.add(p);
                 }
             }
         }

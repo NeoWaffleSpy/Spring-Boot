@@ -36,7 +36,13 @@ graph, zoom, moved nodes) across refreshes; exported as a file it works in any b
 3. Try it: right-click the project → **Run As → Eclipse Application**. In the Eclipse that opens,
    import a Java project, then:
    - **Project → Show Event Map** (or right-click projects → Show Event Map, or Window → Show View →
-     Other… → Event Mapper → Event Map). With no project selected, every open Java project is mapped.
+     Other… → Event Mapper → Event Map). Selected Java projects are mapped; the first time, with none
+     selected, every open Java project is.
+   - Toolbar **Map Folder…**: map every Java project inside a folder, e.g. the root of a multi-module
+     app. **Choose Projects…**: tick the projects to map. The view remembers the choice.
+   - The line under the view's tab shows what is mapped and how many Java files JDT indexes there; it
+     warns when the folder holds many more (modules not imported as Java projects). Each refresh also
+     writes a line to the Error Log with the projects and what every search found.
    - Click a `file:line` location to open it; double-click a graph node to open its source.
    - The map refreshes by itself 1.5 s after Java files are saved, re-parsing only those files (and
      the files whose results point into them). **Refresh** (toolbar) re-analyses everything.

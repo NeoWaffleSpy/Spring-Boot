@@ -6,6 +6,7 @@ import com.eventmapper.core.json.GraphJsonWriter;
 import com.eventmapper.core.model.Graph;
 import com.eventmapper.core.page.PageRenderer;
 import org.eclipse.core.resources.IResource;
+import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.OperationCanceledException;
@@ -23,6 +24,15 @@ import org.eclipse.jdt.ui.JavaUI;
 import org.eclipse.jface.action.Action;
 import org.eclipse.jface.action.IAction;
 import org.eclipse.jface.action.IToolBarManager;
+import org.eclipse.jface.dialogs.MessageDialog;
+import org.eclipse.jface.viewers.ArrayContentProvider;
+import org.eclipse.jface.viewers.LabelProvider;
+import org.eclipse.jface.window.Window;
+import org.eclipse.swt.widgets.DirectoryDialog;
+import org.eclipse.ui.IMemento;
+import org.eclipse.ui.IViewSite;
+import org.eclipse.ui.PartInitException;
+import org.eclipse.ui.dialogs.ListSelectionDialog;
 import org.eclipse.jface.text.ITextSelection;
 import org.eclipse.jface.viewers.ISelection;
 import org.eclipse.swt.SWT;
@@ -63,6 +73,8 @@ public class EventMapView extends ViewPart {
     private static final String PLUGIN_ID = "com.eventmapper.eclipse";
     /** wait after a save before refreshing, so a burst of saves gives one refresh */
     private static final long REFRESH_DELAY_MS = 1500;
+    private static final String KEY_ROOT = "root";
+    private static final String KEY_PROJECTS = "projects";
 
     private Browser browser;
     private Path pageFile;
@@ -76,6 +88,9 @@ public class EventMapView extends ViewPart {
     private Job refreshJob;
     private IElementChangedListener javaListener;
     private ISelectionListener editorListener;
+    /** what the view mapped when the workbench last closed */
+    private String savedRoot;
+    private List<String> savedProjects;
 
     @Override
     public void createPartControl(Composite parent) {
@@ -120,25 +135,121 @@ public class EventMapView extends ViewPart {
         editorListener = this::editorSelectionChanged;
         getSite().getPage().addPostSelectionListener(editorListener);
 
-        setProjects(Projects.selectedOrAll(null));
+        // what was mapped last time (the view remembers it), else every open Java project
+        List<IJavaProject> restored = savedProjects == null ? List.of() : Projects.named(savedProjects);
+        if (!restored.isEmpty()) {
+            boolean rootExists = savedRoot != null && new java.io.File(savedRoot).isDirectory();
+            setProjects(restored, rootExists ? org.eclipse.core.runtime.Path.fromOSString(savedRoot) : null);
+        } else {
+            setProjects(Projects.all(), null);
+        }
     }
 
-    /** Maps these projects from now on. */
+    @Override
+    public void init(IViewSite site, IMemento memento) throws PartInitException {
+        super.init(site, memento);
+        if (memento != null) {
+            savedRoot = memento.getString(KEY_ROOT);
+            String names = memento.getString(KEY_PROJECTS);
+            savedProjects = names == null || names.isBlank() ? null : List.of(names.split("\n"));
+        }
+    }
+
+    @Override
+    public void saveState(IMemento memento) {
+        JdtCodeModel m = model;
+        if (m != null) {
+            memento.putString(KEY_ROOT, m.root().toOSString());
+            memento.putString(KEY_PROJECTS, String.join("\n", m.projects().stream().map(IJavaProject::getElementName).toList()));
+        }
+    }
+
+    /** Maps these projects from now on, from the folder that holds them all. */
     public void setProjects(List<IJavaProject> projects) {
+        setProjects(projects, null);
+    }
+
+    /**
+     * Maps these projects from now on.
+     *
+     * @param root the folder the map is made from (file paths, components, file count), or null for
+     *             the deepest folder holding every project
+     */
+    public void setProjects(List<IJavaProject> projects, IPath root) {
         if (browser == null || pageFile == null) {
             return;
         }
         if (projects.isEmpty()) {
             model = null;
-            browser.setText(message("There is no open Java project to map."));
+            browser.setText(message("There is no open Java project to map. Import your project (File &gt; Import &gt; "
+                    + "Maven &gt; Existing Maven Projects), then use the view's toolbar to choose what to map."));
             pageLoaded = false;
+            setContentDescription("");
             return;
         }
-        JdtCodeModel m = new JdtCodeModel(projects, Projects.commonRoot(projects));
+        JdtCodeModel m = new JdtCodeModel(projects, root != null ? root : Projects.commonRoot(projects));
         model = m;
-        setContentDescription(projects.size() == 1 ? projects.get(0).getElementName()
-                : projects.size() + " projects under " + m.root().toOSString());
+        setContentDescription(describe(m) + " · building…");
         scheduleRefresh(true);
+    }
+
+    private static String describe(JdtCodeModel m) {
+        List<IJavaProject> ps = m.projects();
+        return (ps.size() == 1 ? ps.get(0).getElementName() : ps.size() + " projects") + " under " + m.root().toOSString();
+    }
+
+    /** Toolbar: pick the projects to map from the open Java projects. */
+    private void chooseProjects() {
+        List<IJavaProject> all = Projects.all();
+        if (all.isEmpty()) {
+            MessageDialog.openInformation(getSite().getShell(), "Event Mapper", "There is no open Java project in the workspace.");
+            return;
+        }
+        @SuppressWarnings("deprecation") // the builder replacing this constructor is not in Eclipse 2022-09
+        ListSelectionDialog dialog = new ListSelectionDialog(getSite().getShell(), all, ArrayContentProvider.getInstance(),
+                new LabelProvider() {
+                    @Override
+                    public String getText(Object o) {
+                        IJavaProject p = (IJavaProject) o;
+                        IPath loc = p.getProject().getLocation();
+                        return p.getElementName() + (loc == null ? "" : "   —   " + loc.toOSString());
+                    }
+                }, "Projects to map (only Java projects are listed: import missing modules with File > Import > Maven):");
+        dialog.setTitle("Event Map: Choose Projects");
+        JdtCodeModel m = model;
+        if (m != null) {
+            dialog.setInitialSelections(m.projects().toArray());
+        }
+        if (dialog.open() == Window.OK) {
+            List<IJavaProject> chosen = new ArrayList<>();
+            for (Object o : dialog.getResult()) {
+                chosen.add((IJavaProject) o);
+            }
+            setProjects(chosen, null);
+        }
+    }
+
+    /** Toolbar: map every Java project inside a folder, from that folder. */
+    private void mapFolder() {
+        DirectoryDialog dialog = new DirectoryDialog(getSite().getShell());
+        dialog.setText("Event Map: Map Folder");
+        dialog.setMessage("Map every Java project inside this folder (e.g. the root of a multi-module app):");
+        JdtCodeModel m = model;
+        if (m != null) {
+            dialog.setFilterPath(m.root().toOSString());
+        }
+        String folder = dialog.open();
+        if (folder == null) {
+            return;
+        }
+        IPath root = org.eclipse.core.runtime.Path.fromOSString(folder);
+        List<IJavaProject> inside = Projects.under(root);
+        if (inside.isEmpty()) {
+            MessageDialog.openInformation(getSite().getShell(), "Event Mapper", "No open Java project is inside " + folder
+                    + ".\n\nImport its modules first: File > Import > Maven > Existing Maven Projects, pointing at that folder.");
+            return;
+        }
+        setProjects(inside, root);
     }
 
     private void contributeActions() {
@@ -173,6 +284,26 @@ public class EventMapView extends ViewPart {
         export.setToolTipText("Save the current map as JSON");
         export.setImageDescriptor(images.getImageDescriptor(ISharedImages.IMG_ETOOL_SAVE_EDIT));
 
+        Action projects = new Action("Choose Projects…") {
+            @Override
+            public void run() {
+                chooseProjects();
+            }
+        };
+        projects.setToolTipText("Choose the Java projects to map");
+        projects.setImageDescriptor(images.getImageDescriptor(org.eclipse.ui.ide.IDE.SharedImages.IMG_OBJ_PROJECT));
+
+        Action folder = new Action("Map Folder…") {
+            @Override
+            public void run() {
+                mapFolder();
+            }
+        };
+        folder.setToolTipText("Map every Java project inside a folder, e.g. the root of a multi-module app");
+        folder.setImageDescriptor(images.getImageDescriptor(ISharedImages.IMG_OBJ_FOLDER));
+
+        bar.add(projects);
+        bar.add(folder);
         bar.add(refresh);
         bar.add(link);
         bar.add(export);
@@ -214,11 +345,22 @@ public class EventMapView extends ViewPart {
                 m.invalidate(saved);
             }
             m.setMonitor(monitor);
+            m.resetStats();
             Graph graph = new EventMapper(MapperConfig.defaults()).analyse(m);
             String json = GraphJsonWriter.write(graph);
             String title = Projects.name(m.projects(), m.root());
             lastJson = json;
-            Display.getDefault().asyncExec(() -> show(m, title, json));
+            int indexed = m.sourceFileCount();
+            String status = status(m, graph, indexed);
+            log(IStatus.INFO, "Event map of " + describe(m) + ": projects " + m.projects().stream().map(IJavaProject::getElementName).toList()
+                    + "; " + graph.files + " Java files in the folder, " + indexed + " in the mapped projects; "
+                    + graph.nodes().size() + " nodes, " + graph.edges().size() + " links; found " + m.stats(), null);
+            Display.getDefault().asyncExec(() -> {
+                show(m, title, json);
+                if (m == model && browser != null && !browser.isDisposed()) {
+                    setContentDescription(status);
+                }
+            });
             return Status.OK_STATUS;
         } catch (OperationCanceledException e) {
             return Status.CANCEL_STATUS;
@@ -228,6 +370,19 @@ public class EventMapView extends ViewPart {
         } finally {
             monitor.done();
         }
+    }
+
+    /**
+     * The line under the view's tab: what is mapped, and a warning when most Java files of the folder are
+     * not in the mapped Java projects (modules not imported, or not imported as Java projects).
+     */
+    private static String status(JdtCodeModel m, Graph g, int indexed) {
+        String s = describe(m) + " · " + indexed + " Java files indexed";
+        if (g.files > 0 && indexed < g.files * 0.8) {
+            s += " — but the folder has " + g.files + ": import the missing modules (File > Import > Maven), "
+                    + "then use Map Folder… or Choose Projects…";
+        }
+        return s;
     }
 
     /** On the UI thread: shows the new map, keeping the page's current view (selection, graph, scroll). */
