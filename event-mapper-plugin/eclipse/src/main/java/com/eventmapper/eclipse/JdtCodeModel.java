@@ -211,9 +211,7 @@ final class JdtCodeModel implements CodeModel {
         List<CallSite> found = perFile("calls:" + new TreeSet<>(methodNames), matches, (cu, ast, ms, deps) -> {
             List<CallSite> out = new ArrayList<>();
             for (SearchMatch m : ms) {
-                ASTNode node = NodeFinder.perform(ast, m.getOffset(), m.getLength());
-                if (node instanceof SimpleName name && name.getParent() instanceof MethodInvocation call
-                        && call.getName() == name && methodNames.contains(name.getIdentifier())) {
+                if (invocationAt(ast, m) instanceof MethodInvocation call && methodNames.contains(call.getName().getIdentifier())) {
                     out.add(callSite(cu, ast, call, deps));
                 }
             }
@@ -283,9 +281,8 @@ final class JdtCodeModel implements CodeModel {
         List<CallSite> found = perFile("callers:" + method.id(), matches, (cu, ast, ms, deps) -> {
             List<CallSite> out = new ArrayList<>();
             for (SearchMatch m : ms) {
-                ASTNode node = NodeFinder.perform(ast, m.getOffset(), m.getLength());
-                ASTNode call = node instanceof SimpleName ? node.getParent() : null;
-                if (call instanceof MethodInvocation || call instanceof SuperMethodInvocation) {
+                ASTNode call = invocationAt(ast, m);
+                if (call != null) {
                     out.add(new CallSite(method.name(), null, null, List.of(), enclosing(cu, ast, call, deps),
                             lambda(cu, ast, call), location(cu, ast, call)));
                 }
@@ -344,6 +341,7 @@ final class JdtCodeModel implements CodeModel {
     /** Runs the extractor on each file with matches, reusing what is cached for unchanged files. */
     @SuppressWarnings("unchecked")
     private <T> List<T> perFile(String query, Map<ICompilationUnit, List<SearchMatch>> matches, Extractor<T> extractor) {
+        count(query.substring(0, query.indexOf(':')) + " search hits", matches.values().stream().mapToInt(List::size).sum());
         List<T> out = new ArrayList<>();
         Map<IJavaProject, List<ICompilationUnit>> toParse = new LinkedHashMap<>();
         for (ICompilationUnit cu : matches.keySet()) {
@@ -379,6 +377,25 @@ final class JdtCodeModel implements CodeModel {
             }, monitor);
         }
         return out;
+    }
+
+    /**
+     * The method call a reference match points at, or null. JDT's match covers the method name and,
+     * for an exact match, its arguments too ({@code emit("x")}), so look up from the node covering it
+     * for the call whose name starts at the match.
+     */
+    private static ASTNode invocationAt(CompilationUnit ast, SearchMatch m) {
+        for (ASTNode n = NodeFinder.perform(ast, m.getOffset(), m.getLength()); n != null; n = n.getParent()) {
+            SimpleName name = n instanceof MethodInvocation mi ? mi.getName()
+                    : n instanceof SuperMethodInvocation si ? si.getName() : null;
+            if (name != null && name.getStartPosition() == m.getOffset()) {
+                return n;
+            }
+            if (n instanceof BodyDeclaration) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private static long stamp(ICompilationUnit cu) {
