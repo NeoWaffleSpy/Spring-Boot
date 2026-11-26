@@ -28,7 +28,8 @@
 #                      code nothing in the scan calls) with all it triggers
 #    * Logs (--logs)   hops on the event bus per address (calls, replies, times,
 #                      errors), joined to the map: events seen ×N / never seen;
-#                      error and warning patterns; LOG_RULES counts
+#                      error and warning patterns; LOG_RULES counts; observed
+#                      lifecycles (hops chained by timing, checked against the code)
 #
 #  Deferred calls count as calls: future.onSuccess(this::handle), compose(Foo::m),
 #  onComplete(new Done()), consumer(addr, this) -> the handle()/accept()... run.
@@ -116,6 +117,9 @@ LOG_SKIP='>> headers:|<< headers:'
 # Levels whose messages are grouped into patterns (numbers, ids and quoted text replaced by
 # placeholders, so similar messages count together).
 LOG_PATTERN_LEVELS="ERROR WARN"
+# Hops linked into lifecycles: a hop sent by X while a hop received by X is still waiting
+# for its reply is taken as its child (the latest such hop, at most LOG_LINK_WINDOW ms old).
+LOG_LINK_WINDOW=30000
 # Named rules counted on every record, as name=regex (one per line).
 LOG_RULES='
 connection-refused=Connection refused
@@ -1222,6 +1226,7 @@ BEGIN {
   nRu = rules(ENVIRON["LOG_RULES"], RUK, RUR)
   n = split(ENVIRON["LOG_PATTERN_LEVELS"], w, " "); for (i = 1; i <= n; i++) PATLV[w[i]] = 1
   nFiles = 0; nPat = 0; MAXPAT = 3000; minT = ""; maxT = ""
+  WINDOW = ENVIRON["LOG_LINK_WINDOW"] + 0; if (WINDOW <= 0) WINDOW = 30000
   while ((getline v < loglist) > 0) {
     p = index(v, "\t"); q = index(substr(v, p + 1), "\t")
     if (!p || !q) continue
@@ -1229,7 +1234,7 @@ BEGIN {
     readFile(real, nFiles)
   }
   close(loglist)
-  for (k in PK) { HU[PK[k]]++ }
+  for (k in PH) { HU[Hk[PH[k]]]++ }
   writeJson()
   printf "Read %d log lines (%d records) -> %d hops on %d routes, %d replies without request\n", nLines, nRec, nHop, nKeys, orphan > "/dev/stderr"
 }
@@ -1299,23 +1304,47 @@ function record(line, f, ln,   rest, i, p, val, time, level, msg, kind, tag, id,
 }
 
 # address, Sender->Receiver, payload
-function hopRequest(id, s, ms, time, f, ln,   p, addr, who, from, to, key) {
+function hopRequest(id, s, ms, time, f, ln,   p, addr, who, from, to, key, n, a, j, h, par, amb, keep) {
   p = index(s, " "); addr = p ? substr(s, 1, p - 1) : s; s = p ? substr(s, p + 1) : ""
   sub(/^[ \t]+/, "", s); p = index(s, " "); who = p ? substr(s, 1, p - 1) : s
   p = index(who, "->"); if (p) { from = substr(who, 1, p - 1); to = substr(who, p + 2) } else { from = ""; to = who }
   key = addr SUBSEP from SUBSEP to
-  if (!(key in HC)) { nKeys++; HO[nKeys] = key; HF[key] = f; HL[key] = ln; HT1[key] = time }
+  if (!(key in HC)) { nKeys++; HO[nKeys] = key; KI[key] = nKeys; HF[key] = f; HL[key] = ln; HT1[key] = time }
   HC[key]++; HT2[key] = time; nHop++
-  PK[id] = key; PT[id] = ms
+  # parent: the latest hop received by this hop's sender and still waiting for its reply
+  par = 0; amb = 0
+  if (from != "" && (from in OPENBY) && OPENBY[from] != "") {
+    n = split(OPENBY[from], a, " "); keep = ""
+    for (j = 1; j <= n; j++) {
+      h = a[j]
+      if (ms != "" && Hs[h] != "" && ms - Hs[h] > WINDOW) continue   # too old: its reply was lost
+      keep = keep " " h
+      if (par) amb = 1
+      par = h
+    }
+    OPENBY[from] = keep
+  }
+  if (par) { PAIR[Hk[par] SUBSEP key]++; HP[key]++; if (amb) HA[key]++ }
+  nH++; Hk[nH] = key; Hs[nH] = ms; Hto[nH] = to
+  OPENBY[to] = OPENBY[to] " " nH
+  PH[id] = nH
 }
-function hopReply(id, s, ms, f, ln,   p, st, key, d) {
+# takes handle h out of the hops open at receiver "to"
+function unopen(to, h,   s, i) {
+  s = OPENBY[to] " "; i = index(s, " " h " ")
+  if (i) { s = substr(s, 1, i - 1) substr(s, i + length(h) + 1) }
+  sub(/ $/, "", s); OPENBY[to] = s
+}
+function hopReply(id, s, ms, f, ln,   p, st, key, d, h) {
   p = index(s, " "); st = p ? substr(s, 1, p - 1) : s
-  if (!(id in PK)) { orphan++; return }
-  key = PK[id]; delete PK[id]
+  if (!(id in PH)) { orphan++; return }
+  h = PH[id]; key = Hk[h]; delete PH[id]
+  unopen(Hto[h], h); PT[id] = Hs[h]
   HR[key]++; HS[key SUBSEP st]++; if (!((key, "|") in HSL) || index(HSL[key, "|"], "," st ",") == 0) HSL[key, "|"] = HSL[key, "|"] "," st ","
   if (PT[id] != "" && ms != "") { d = ms - PT[id]; if (d >= 0) { HD[key] += d; HDN[key]++; if (d > HM[key]) HM[key] = d } }
   delete PT[id]
   if (st !~ /^2/) { HE[key]++; if (!(key in HEF)) { HEF[key] = f; HEL[key] = ln } }
+  delete Hk[h]; delete Hs[h]; delete Hto[h]   # closed: it can no longer be a parent
 }
 
 # "MM/DD HH:MM:SS.mmm" or "YYYY-MM-DD HH:MM:SS,mmm" -> milliseconds (only differences matter)
@@ -1343,8 +1372,16 @@ function writeJson(   i, k, a, n, x, st, sl, first) {
     k = HO[i]; split(k, a, SUBSEP)
     st = ""; n = split(HSL[k, "|"], sl, ",")
     for (x = 1; x <= n; x++) if (sl[x] != "") st = st (st == "" ? "" : ",") "\"" jesc(sl[x]) "\":" HS[k SUBSEP sl[x]]
-    printf "%s{\"a\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"n\":%d,\"replied\":%d,\"noReply\":%d,\"err\":%d,\"ms\":%.0f,\"msN\":%d,\"max\":%.0f,\"file\":%d,\"line\":%d,\"t1\":\"%s\",\"t2\":\"%s\",\"st\":{%s},\"errFile\":%d,\"errLine\":%d}", \
-      (i > 1 ? "," : ""), jesc(a[1]), jesc(a[2]), jesc(a[3]), HC[k], HR[k], HU[k], HE[k], HD[k], HDN[k], HM[k], HF[k], HL[k], jesc(HT1[k]), jesc(HT2[k]), st, HEF[k], HEL[k] > outfile
+    printf "%s{\"a\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"n\":%d,\"replied\":%d,\"noReply\":%d,\"err\":%d,\"ms\":%.0f,\"msN\":%d,\"max\":%.0f,\"file\":%d,\"line\":%d,\"t1\":\"%s\",\"t2\":\"%s\",\"st\":{%s},\"errFile\":%d,\"errLine\":%d,\"par\":%d,\"amb\":%d}", \
+      (i > 1 ? "," : ""), jesc(a[1]), jesc(a[2]), jesc(a[3]), HC[k], HR[k], HU[k], HE[k], HD[k], HDN[k], HM[k], HF[k], HL[k], jesc(HT1[k]), jesc(HT2[k]), st, HEF[k], HEL[k], HP[k], HA[k] > outfile
+  }
+  # parent hop -> child hop, with how many times (indexes into hops, from 1)
+  printf "],\"links\":[" > outfile
+  first = 1
+  for (k in PAIR) {
+    split(k, a, SUBSEP)
+    printf "%s{\"p\":%d,\"c\":%d,\"n\":%d}", (first ? "" : ","), KI[a[1] SUBSEP a[2] SUBSEP a[3]], KI[a[4] SUBSEP a[5] SUBSEP a[6]], PAIR[k] > outfile
+    first = 0
   }
   printf "],\"patterns\":[" > outfile
   for (i = 1; i <= nPat; i++) {
@@ -1379,7 +1416,7 @@ if [ -s "$TMP/logs.txt" ]; then
   echo "Reading the logs with $LOG_AWK ..." >&2
   LC_ALL=C LOG_FIELDS="$LOG_FIELDS" LOG_SEP="$LOG_SEP" LOG_START="$LOG_START" LOG_IDS="$LOG_IDS" \
     LOG_REQUEST="$LOG_REQUEST" LOG_REPLY="$LOG_REPLY" LOG_SKIP="$LOG_SKIP" \
-    LOG_PATTERN_LEVELS="$LOG_PATTERN_LEVELS" LOG_RULES="$LOG_RULES" \
+    LOG_PATTERN_LEVELS="$LOG_PATTERN_LEVELS" LOG_RULES="$LOG_RULES" LOG_LINK_WINDOW="$LOG_LINK_WINDOW" \
     "$LOG_AWK" -v loglist="$TMP/logs.txt" -v outfile="$TMP/logs.json" "$AWK_LOGS" < /dev/null
 else
   printf 'null' > "$TMP/logs.json"
@@ -1408,7 +1445,7 @@ aside{border-right:1px solid var(--line);display:flex;flex-direction:column;min-
 #chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 10px 8px}
 .chip{border:1px solid var(--line);border-radius:999px;padding:2px 9px;font-size:12px;cursor:pointer;user-select:none;background:var(--bg)}
 .chip.off{opacity:.4;text-decoration:line-through}
-.navtabs{display:flex;gap:4px;padding:0 10px 8px}
+.navtabs{display:flex;flex-wrap:wrap;gap:4px;padding:0 10px 8px}
 .navtabs button,.btn{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:6px;padding:4px 10px;cursor:pointer}
 .navtabs button.on,.btn.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 #count{color:var(--mute);font-size:12px;padding:0 12px 6px}
@@ -1488,6 +1525,9 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .st{font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;padding:0 4px;border-radius:4px;background:var(--bg);white-space:nowrap}
 .lvl{white-space:nowrap}.lvl.lv-ERROR,.lvl.lv-ERROR b{color:var(--warn)}.lvl.lv-WARN,.lvl.lv-WARN b{color:var(--ev)}
 .lfiles{margin:10px 0 0}.lfiles summary{cursor:pointer}
+.ltab,.ftab{display:block;overflow-x:auto}.ltab>tbody,.ftab>tbody{display:table;width:100%}
+.row.lrow{display:inline-flex;flex-wrap:wrap;gap:2px 8px}
+.lpct{font-size:11px;font-weight:700;color:var(--acc)}.cin{font-size:11px;color:var(--ep)}.cout{font-size:11px;color:var(--warn)}
 .gsp rect{fill:color-mix(in srgb,var(--sp) 22%,var(--panel));stroke:color-mix(in srgb,var(--sp) 55%,transparent);stroke-width:1}.gn .gsp text{fill:var(--sp);font-size:9.5px;font-weight:600;text-anchor:middle}
 </style></head><body>
 EOF_HTML_HEAD
@@ -2102,6 +2142,7 @@ function drawLogs(){const L=LOGS,mb=L.files.reduce((a,f)=>a+f.bytes,0)/1048576;
  ${hops.slice(0,500).map(hopRow).join('')}</table>${hops.length>500?`<div class="sub">showing 500 of ${fmtN(hops.length)}: filter to narrow</div>`:''}
  ${L.orphans?`<div class="help">${fmtN(L.orphans)} replies had no request in the logs read (it was in an older file).</div>`:''}`
  :'<div class="sub">No hop found. If the logs have some, check LOG_IDS, LOG_REQUEST and LOG_REPLY in the CONFIG of the script.</div>'}</div>
+ ${L.hops.length?lifeHtml(L):''}
  ${L.hops.length?`<div class="section"><h3>Events never seen in the logs (${never.length})</h3><div class="help">No hop in the logs read has their value as address. Unused, or not used during the period the logs cover.</div>
  ${never.length?`<table>${never.map(n=>`<tr><td><span class="row">${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span></span></td><td><code>${esc(n.value)}</code></td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`).join('')}</table>`:'<div class="sub">none</div>'}</div>
  <div class="section"><h3>Addresses not in the map (${outside.size})</h3><div class="help">Seen in the logs, but no event in the scanned code has this value: built at run time, from another service, or missed by the scan.</div>
@@ -2112,7 +2153,44 @@ function drawLogs(){const L=LOGS,mb=L.files.reduce((a,f)=>a+f.bytes,0)/1048576;
  <div class="section"><h3>Rules (${L.rules.length})</h3><div class="help">LOG_RULES in the CONFIG of the script.</div>
  ${L.rules.length?`<table class="ltab"><tr><th>Rule</th><th class="num">Count</th><th>Example</th></tr>${L.rules.map(r=>`<tr><td><b>${esc(r.name)}</b><div class="sub"><code>${esc(r.re)}</code></div></td><td class="num">${fmtN(r.n)}</td><td>${r.n?`<code>${esc(r.ex)}</code><div>${logLoc(r.file,r.line)}</div>`:''}</td></tr>`).join('')}</table>`:'<div class="sub">none</div>'}</div>`;
  const lq=$('#lq');if(lq){lq.oninput=()=>{logQ=lq.value;const p=lq.selectionStart;drawLogs();const l2=$('#lq');l2.focus();l2.setSelectionRange(p,p);};
-  $('#lsort').onchange=e=>{logSort=e.target.value;drawLogs();};}}
+  $('#lsort').onchange=e=>{logSort=e.target.value;drawLogs();};}
+ const lt=$('#lthr');if(lt)lt.onchange=e=>{lifeThr=+e.target.value;const y=$('#detail').scrollTop;drawLogs();$('#detail').scrollTop=y;};}
+// ---- observed lifecycles: hops linked by timing (see LOG_LINK_WINDOW). A link A -> B means "B was
+// sent by A's receiver while A waited for its reply"; its strength is the share of A's runs that
+// had it. Only links at least as strong as the threshold are drawn.
+let lifeThr=0.5;
+const CODEP=new Map();
+// does the code lead from the handler of hop p to the event of hop c?  true / false / null (unknown)
+function inCode(p,c){const k=p.a+'\u0001'+p.to+'\u0001'+c.a;if(CODEP.has(k))return CODEP.get(k);
+ const ev=EVBYVAL.get(p.a),target=EVBYVAL.get(c.a);let r=null;
+ if(ev&&target){const start=(OUT.get(ev.id)||[]).map(e=>e.id).filter(id=>{const m=N.get(id);return m&&simpleCls(m.cls)===p.to;});
+  if(start.length){r=false;const seen=new Set(start),q=[...start];
+   for(let i=0;i<q.length&&i<5000&&!r;i++)for(const e of OUT.get(q[i])||[]){if(e.id===target.id){r=true;break;}
+    if(!seen.has(e.id)&&N.get(e.id)?.kind!=='event'){seen.add(e.id);q.push(e.id);}}}}
+ CODEP.set(k,r);return r;}
+function lifeHtml(L){const H=L.hops,kids=new Map(),strong=new Set();
+ for(const l of L.links){const p=H[l.p-1],c=H[l.c-1];if(!p||!c)continue;const r=l.n/p.n;
+  if(r>=lifeThr){(kids.get(l.p)||kids.set(l.p,[]).get(l.p)).push({i:l.c,n:l.n,r});strong.add(l.c);}}
+ for(const v of kids.values())v.sort((a,b)=>b.n-a.n);
+ // starts: hops with strong children that are rarely children themselves
+ const roots=[...kids.keys()].filter(i=>{const h=H[i-1];return h.par/h.n<0.5||!strong.has(i);}).sort((a,b)=>H[b-1].n-H[a-1].n);
+ const hopLine=(h,extra)=>{const {ev}=hopMap(h);return `<span class="row lrow">${ev?`${ic(ev)}<span class="nm" data-id="${esc(ev.id)}"><code>${esc(h.a)}</code></span>`:`<code>${esc(h.a)}</code>`}
+  <span class="sub">${esc(h.from||'?')} → ${esc(h.to)}</span><span class="seen${h.err||h.noReply?' serr':''}" title="${fmtN(h.n)} calls${h.err?' · '+fmtN(h.err)+' errors':''}">×${fmtN(h.n)}</span>${h.msN?`<span class="sub">${fmtMs(h.ms/h.msN)}</span>`:''}${extra||''}</span>`;};
+ const codeTag=(p,c)=>{const x=inCode(p,c);return x===true?'<span class="cin" title="The code leads from this handler to that event">in code ✓</span>'
+  :x===false?'<span class="cout" title="No path in the scanned code from the receiver\'s handler to that event: a call the scan misses, or a coincidence in timing">not in code</span>':'';};
+ let budget=1500;
+ const node=(i,path)=>{const ch=kids.get(i)||[];let out='';
+  for(const k of ch){if(budget--<=0)break;const p=H[i-1],c=H[k.i-1];
+   const extra=` <span class="lpct" title="${fmtN(k.n)} of the ${fmtN(p.n)} runs of the parent">${Math.round(k.r*100)}%</span>${codeTag(p,c)}${c.amb?` <span class="sub" title="${fmtN(c.amb)} times another hop of the same receiver was waiting too">· ${fmtN(c.amb)} unsure</span>`:''}`;
+   if(path.has(k.i)){out+=`<li class="leaf">${hopLine(c,extra)} <span class="cyc">↻ cycle</span></li>`;continue;}
+   const sub=kids.has(k.i)?node(k.i,new Set([...path,k.i])):'';
+   out+=sub?`<li><details open><summary>${hopLine(c,extra)}</summary><ul>${sub}</ul></details></li>`:`<li class="leaf">${hopLine(c,extra)}</li>`;}
+  return out;};
+ const body=roots.length?`<ul class="tree">${roots.slice(0,100).map(i=>`<li><details${roots.length<=10?' open':''}><summary>${hopLine(H[i-1])}</summary><ul>${node(i,new Set([i]))}</ul></details></li>`).join('')}</ul>${roots.length>100?`<div class="sub">showing the 100 busiest of ${roots.length}</div>`:''}`
+  :`<div class="sub">${L.links.length?'No link this strong: lower the threshold.':'No hop was sent while another one was waiting for its reply.'}</div>`;
+ return `<div class="section"><h3>Observed lifecycles</h3>
+ <div class="help">Hops chained by timing: a hop is the child of the latest hop its sender received and has not replied to yet. The % is how often the parent was followed by it; <b>in code ✓</b> / <b>not in code</b> compares with the map.</div>
+ <div class="toolbar"><span class="sub">links followed in at least</span><select id="lthr">${[[0.9,'90%'],[0.5,'50%'],[0.2,'20%'],[0.05,'5%'],[0,'any']].map(([v,t])=>`<option value="${v}" ${v===lifeThr?'selected':''}>${t}</option>`).join('')}</select><span class="sub">of the parent's runs · ${fmtN(L.links.length)} links in all</span></div>${body}</div>`;}
 renderList();fromHash();
 </script></body></html>
 EOF_HTML_TAIL
