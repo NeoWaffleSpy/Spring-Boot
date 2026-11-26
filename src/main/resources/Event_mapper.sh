@@ -26,6 +26,12 @@
 #    * Blind spots     emit(variable) and handlers it couldn't resolve
 #    * Flows           every entry point (endpoints, events fired from outside,
 #                      code nothing in the scan calls) with all it triggers
+#    * Logs (--logs)   hops on the event bus per address (calls, replies, times,
+#                      errors), joined to the map: events seen ×N / never seen;
+#                      error and warning patterns; LOG_RULES counts
+#
+#  Deferred calls count as calls: future.onSuccess(this::handle), compose(Foo::m),
+#  onComplete(new Done()), consumer(addr, this) -> the handle()/accept()... run.
 #
 #  It is a heuristic (tokenizer + brace matching), not a compiler.
 # =============================================================================
@@ -85,6 +91,36 @@ FOLLOW_CALLS=1
 # a path here; use --logs for those). They can be outside the scanned folder.
 # --logs DIR on the command line adds to this list.
 LOG_DIRS=""
+
+# How log lines are read. Rules marked "one per line" take as many lines as needed: add a
+# line for a new tag or pattern, nothing else to change. Regexes are POSIX extended (awk).
+#
+# A line that starts a record; other lines continue the record above (stack traces...).
+LOG_START='^[0-9][0-9]/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+# Separator between the fields of a record, and the field names in order (the last one takes
+# the rest of the line). "time", "level" and "message" are used; other names are skipped.
+LOG_SEP=' - '
+LOG_FIELDS="time category level message"
+# Correlation tags at the start of the message, as kind=regex (one per line).
+LOG_IDS='
+action=^\[action-[A-Za-z0-9]+\]
+event=^\[event-[A-Za-z0-9]+\]
+internal-call=^\[internal-call-[A-Za-z0-9]+\]
+'
+# After a tag, a hop on the event bus: its request ">> @address Sender->Receiver payload"
+# and its reply "<< status payload". Messages starting with a LOG_SKIP prefix (|-separated)
+# are ignored.
+LOG_REQUEST='>> @'
+LOG_REPLY='<< '
+LOG_SKIP='>> headers:|<< headers:'
+# Levels whose messages are grouped into patterns (numbers, ids and quoted text replaced by
+# placeholders, so similar messages count together).
+LOG_PATTERN_LEVELS="ERROR WARN"
+# Named rules counted on every record, as name=regex (one per line).
+LOG_RULES='
+connection-refused=Connection refused
+timeout=[Tt]ime[d]? ?out
+'
 # ============================ END CONFIG =====================================
 
 set -eu
@@ -156,7 +192,7 @@ else
 fi
 [ -n "$COMPONENTS" ] && COMPONENTS="$(printf '%s\n' "$COMPONENTS" | sed -e 's|^\./||' -e 's|/*pom\.xml$||' -e 's|^$|.|' | sort -u | tr '\n' '|')"
 
-# ---- log files: *.log under each log folder, as "bytes<TAB>absolute path" --------
+# ---- log files: *.log under each log folder, as "bytes<TAB>path<TAB>path shown" ---
 : > "$TMP/logs.txt"
 if [ ${#LOG_LIST[@]} -gt 0 ]; then
   for d in "${LOG_LIST[@]}"; do
@@ -165,7 +201,7 @@ if [ ${#LOG_LIST[@]} -gt 0 ]; then
       b="$(wc -c < "$f" | tr -d ' ')"
       shown="$f"
       if command -v cygpath >/dev/null 2>&1; then shown="$(cygpath -m "$f")"; fi
-      printf '%s\t%s\n' "$b" "$shown"
+      printf '%s\t%s\t%s\n' "$b" "$f" "$shown"
     done >> "$TMP/logs.txt"
   done
   echo "Found $(wc -l < "$TMP/logs.txt" | tr -d ' ') log files in ${#LOG_LIST[@]} folder(s)." >&2
@@ -297,7 +333,7 @@ function walkFile(rel,   i, j, t, k, a, imp, k2) {
   }
   depth = 0; ctxKind[0] = "FILE"; ctxParen[0] = 0; ctxFq[0] = ""; ctxQual[0] = ""; ctxId[0] = ""; ctxClose[0] = nt + 1
   pd = 0; nAnn = 0; nTA = 0; pendType = ""
-  split("", pendLam); split("", exprEnd); split("", exprId); split("", anonL)
+  split("", pendLam); split("", exprEnd); split("", exprId); split("", anonL); split("", anonC); split("", USEDREF)
   for (i = 1; i <= nt; i++) {
     while (depth > 0 && ctxKind[depth] == "EXPR" && i >= ctxClose[depth]) depth--
     if (i in exprId) {
@@ -309,6 +345,7 @@ function walkFile(rel,   i, j, t, k, a, imp, k2) {
       if (t == "(") pd++
       else if (t == ")") pd--
       else if (t == "{") openBrace(i, rel)
+      else if (t == "::") refCall(i, rel)
       else if (t == "}") {
         if (depth > 0) { if (ctxKind[depth] == "TYPE" || ctxKind[depth] == "METHOD") nAnn = 0; depth-- }
       }
@@ -422,6 +459,7 @@ function newType(i, rel, anonP,   par, d, qual, fq, simple, j, ad, mode, a, pre,
     }
   }
   if (anonP && (i in anonL)) { Lkind[anonL[i]] = "anon"; Ltarget[anonL[i]] = fq }
+  if (anonP && (i in anonC)) ObAnon[anonC[i]] = fq
   if (!anonP) { pendType = ""; nTA = 0 }
   depth++; ctxKind[depth] = "TYPE"; ctxId[depth] = ""; ctxParen[depth] = pd; ctxFq[depth] = fq; ctxQual[depth] = qual
   nAnn = 0
@@ -536,6 +574,11 @@ function fieldCheck(i,   fq, nm, j, ad, s, hasS, hasF, q, tgt) {
         }
       }
     }
+  }
+  # Handler<String> h = new DoneHandler(): the concrete class says more than the declared type
+  if (T[i] == "=" && T[i + 1] == "new" && K[i + 2] == "i") {
+    q = i + 2; while (T[q + 1] == "." && K[q + 2] == "i") q += 2
+    if (T[q + 1] == "(" || T[q + 1] == "<") { TF[fq SUBSEP nm] = T[q]; return }
   }
   while (T[j] == "]" && T[j - 1] == "[") j -= 2
   if (T[j] == ">") {
@@ -683,7 +726,49 @@ function routeCall(i, rel, sc, fq, ce,   a1, e1, a2, e2, a3, a, rid, own, verb, 
     return
   }
   q = a3; while (q < ce && (K[q] == "i" || T[q] == ".")) q++
-  if (T[q] == "::" && K[q + 1] == "i" && q > a3 && q + 2 == ce) { Rkind[nRt] = "ref"; Rtarget[nRt] = T[q - 1] LS T[q + 1] }
+  if (T[q] == "::" && K[q + 1] == "i" && q > a3 && q + 2 == ce) { Rkind[nRt] = "ref"; Rtarget[nRt] = T[q - 1] LS T[q + 1]; USEDREF[q] = 1 }
+}
+
+# A method reference used as a value: future.onSuccess(this::handle), compose(Foo::handle),
+# map(mapper::convert). The method runs later, called by whatever receives it, so it counts as a
+# call from where the reference is written. (References a listener or a route registers are
+# handled there.)
+function refCall(i, rel,   sc, recv) {
+  if (!FOLLOW || (i in USEDREF) || K[i + 1] != "i" || T[i + 1] == "new") return
+  sc = curScope(); if (sc == "" || substr(sc, 1, 6) == "class:") return
+  if (T[i - 1] == "this" || T[i - 1] == "super") recv = ""
+  else if (K[i - 1] == "i" && T[i - 2] != ".") recv = T[i - 1]
+  else return
+  nCalls++; Cscope[nCalls] = sc; Cfq[nCalls] = ctxFq[depth]; Crecv[nCalls] = recv; Cname[nCalls] = T[i + 1]; Cfile[nCalls] = rel; Cline[nCalls] = L[i]
+}
+
+# An object handed to a call: future.onComplete(new Done()), consumer(addr, this), then(handler),
+# with a field or parameter as handler. Its CALLBACK_METHODS (handle, accept, run...) run later,
+# called by whatever receives the object. Resolved at the end, when every class is known.
+function callbackArgs(o, ce, sc, rel,   a, s, pdp) {
+  s = o + 1; pdp = 0
+  for (a = o + 1; a <= ce; a++) {
+    if (a < ce && (T[a] == "(" || T[a] == "{" || T[a] == "[")) pdp++
+    else if (a < ce && (T[a] == ")" || T[a] == "}" || T[a] == "]")) pdp--
+    else if (a == ce || (T[a] == "," && pdp == 0)) { if (a > s) callbackArg(s, a, sc, rel); s = a + 1 }
+  }
+}
+function callbackArg(s, e, sc, rel,   q, r, nm) {
+  if (e == s + 1 && T[s] == "this") { nOb++; ObK[nOb] = "this"; ObN[nOb] = "" }
+  else if (e == s + 1 && K[s] == "i" && T[s] ~ /^[a-z_]/) { nOb++; ObK[nOb] = "var"; ObN[nOb] = T[s] }
+  else if (T[s] == "new" && K[s + 1] == "i") {
+    q = s + 1; while (T[q + 1] == "." && K[q + 2] == "i") q += 2
+    nm = T[q]
+    while (q < e && T[q] != "(") q++
+    if (T[q] != "(" || !(q in PM)) return
+    # the whole argument must be the object: new X(..) or new X(..) { .. }
+    r = PM[q] + 1; if (T[r] == "{" && (r in PM)) { anonAt = r; r = PM[r] + 1 } else anonAt = 0
+    if (r != e) return
+    nOb++; ObK[nOb] = "new"; ObN[nOb] = nm
+    if (anonAt) anonC[anonAt] = nOb
+  }
+  else return
+  ObSc[nOb] = sc; ObFq[nOb] = ctxFq[depth]; ObFile[nOb] = rel; ObLine[nOb] = L[s]
 }
 
 function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, recv, pi, ad) {
@@ -716,7 +801,7 @@ function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, 
       Lhx[n] = tokText(j, ce)
       q = j
       while (q < ce && (K[q] == "i" || T[q] == ".")) q++
-      if (T[q] == "::" && K[q + 1] == "i" && q > j) { Lkind[n] = "ref"; Ltarget[n] = T[q - 1] LS T[q + 1] }
+      if (T[q] == "::" && K[q + 1] == "i" && q > j) { Lkind[n] = "ref"; Ltarget[n] = T[q - 1] LS T[q + 1]; USEDREF[q] = 1 }
       else {
         for (a = j; a < ce; a++) if (T[a] == "->") break
         if (a < ce) {
@@ -738,6 +823,7 @@ function callLike(i, rel,   t, prev, sc, fq, inBody, ce, r, j, q, a, lid, n, b, 
     }
   }
   if ((t in CLIENT) && inBody && !(t in EMIT) && !(t in LISTEN)) clientCall(i, rel, sc, ce)
+  if (FOLLOW && inBody && !(t in EMIT) && !(t in LISTEN) && !(t in ROUTE) && ((i + 1) in PM)) callbackArgs(i + 1, ce, sc, rel)
   if (FOLLOW && inBody && t ~ /^[a-z_]/ && !(t in CTRL) && !(t in EMIT) && !(t in LISTEN)) {
     recv = ""
     if (prev == ".") { if (K[pi - 1] == "i" && T[pi - 2] != ".") recv = T[pi - 1]; else return }
@@ -987,6 +1073,25 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     nn = split(targets, arr, LS)
     for (x = 1; x <= nn; x++) if (arr[x] != Cscope[c]) addEdge(Cscope[c], arr[x], "calls", Cfile[c], Cline[c])
   }
+  # objects handed to calls -> their callback methods. A named class must implement or extend
+  # something (Handler, Runnable...), so plain data objects passed around are left out.
+  for (ob = 1; ob <= nOb; ob++) {
+    obCls = ObFq[ob]
+    if (ObK[ob] == "this") obList = obCls
+    else if (ObK[ob] == "new") obList = (ob in ObAnon) ? ObAnon[ob] : resolveType(ObN[ob], obCls)
+    else { ft = lookupField(obCls, ObN[ob]); if (ft == "") continue; obList = classesFor(ft, obCls) }
+    nn = split(obList, arr, LS)
+    for (x = 1; x <= nn; x++) {
+      obC = arr[x]
+      if (!(obC in tFile) || (!tAnon[obC] && tSup[obC] == "")) continue
+      obFound = 0
+      for (obY = 1; obY <= nCB; obY++) {
+        obM = lookupMethod(obC, CBL[obY], 0)
+        if (obM != "" && obM != ObSc[ob]) { addEdge(ObSc[ob], obM, "calls", ObFile[ob], ObLine[ob]); obFound = 1 }
+      }
+      if (!obFound && tAnon[obC] && TMC[obC] == 1 && TMfirst[obC] != ObSc[ob]) addEdge(ObSc[ob], TMfirst[obC], "calls", ObFile[ob], ObLine[ob])
+    }
+  }
 
   # prune: keep events, endpoints, handlers, lambdas, and anything leading to an event
   for (key in E) {
@@ -1032,15 +1137,6 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     v = arr[x]; sub(/.*\//, "", v); if (arr[x] == ".") v = root_name
     printf "%s{\"dir\":\"%s\",\"name\":\"%s\"}", (first ? "" : ","), jesc(arr[x] == "." ? "" : arr[x]), jesc(v) > outfile; first = 0
   }
-  # log files found under the --logs folders: "bytes<TAB>path" per line
-  printf "],\"logs\":[" > outfile
-  first = 1
-  while ((getline v < loglist) > 0) {
-    p = index(v, "\t"); if (!p) continue
-    printf "%s{\"file\":\"%s\",\"bytes\":%s}", (first ? "" : ","), jesc(substr(v, p + 1)), (substr(v, 1, p - 1) ~ /^[0-9]+$/ ? substr(v, 1, p - 1) : 0) > outfile
-    first = 0
-  }
-  close(loglist)
   printf "]}," > outfile
   printf "\"edges\":[" > outfile
   first = 1; nEdges = 0
@@ -1101,7 +1197,7 @@ function jesc(s,   out, i, c, n) {
 EOF_AWK
 
 (cd "$ROOT_ABS" && LC_ALL=C "$AWK_BIN" \
-  -v listfile="$TMP/files.txt" -v outfile="$TMP/graph.json" -v root="$ROOT_LINK" -v loglist="$TMP/logs.txt" \
+  -v listfile="$TMP/files.txt" -v outfile="$TMP/graph.json" -v root="$ROOT_LINK" \
   -v generated="$(date '+%Y-%m-%dT%H:%M:%S')" -v special_dirs="$SPECIAL_DIRS" \
   -v emit_methods="$EMIT_METHODS" -v listen_methods="$LISTEN_METHODS" \
   -v listen_ann="$LISTEN_ANNOTATIONS" -v ev_keys="$EVENT_ANNOTATION_KEYS" \
@@ -1109,6 +1205,185 @@ EOF_AWK
   -v callback_methods="$CALLBACK_METHODS" -v route_methods="$ROUTE_METHODS" \
   -v client_methods="$CLIENT_METHODS" -v components="$COMPONENTS" -v root_name="$NAME" -v follow_calls="$FOLLOW_CALLS" \
   "$AWK_PROG")
+
+# ---- the log reader (awk) -------------------------------------------------------
+# Streams every log file once and keeps only aggregates, so the page stays small whatever the
+# size of the logs: hops per address, message patterns, rule and level counts.
+read -r -d '' AWK_LOGS <<'EOF_AWK_LOGS' || true
+# Input : -v loglist=<file of "bytes<TAB>path<TAB>shown path">, rules in ENVIRON (no escape
+#         processing, so regexes keep their backslashes).
+# Output: JSON in -v outfile.
+BEGIN {
+  CTL = "[\001-\037]"
+  nF = split(ENVIRON["LOG_FIELDS"], FN, " "); SEP = ENVIRON["LOG_SEP"]; SEPL = length(SEP)
+  START = ENVIRON["LOG_START"]; REQ = ENVIRON["LOG_REQUEST"]; REP = ENVIRON["LOG_REPLY"]
+  nSkip = split(ENVIRON["LOG_SKIP"], SKIP, "|")
+  nId = rules(ENVIRON["LOG_IDS"], IDK, IDR)
+  nRu = rules(ENVIRON["LOG_RULES"], RUK, RUR)
+  n = split(ENVIRON["LOG_PATTERN_LEVELS"], w, " "); for (i = 1; i <= n; i++) PATLV[w[i]] = 1
+  nFiles = 0; nPat = 0; MAXPAT = 3000; minT = ""; maxT = ""
+  while ((getline v < loglist) > 0) {
+    p = index(v, "\t"); q = index(substr(v, p + 1), "\t")
+    if (!p || !q) continue
+    nFiles++; Fb[nFiles] = substr(v, 1, p - 1); real = substr(v, p + 1, q - 1); Fs[nFiles] = substr(v, p + q + 1)
+    readFile(real, nFiles)
+  }
+  close(loglist)
+  for (k in PK) { HU[PK[k]]++ }
+  writeJson()
+  printf "Read %d log lines (%d records) -> %d hops on %d routes, %d replies without request\n", nLines, nRec, nHop, nKeys, orphan > "/dev/stderr"
+}
+
+# "name=regex" lines -> arrays; blank lines and lines without "=" are skipped
+function rules(s, K, R,   n, a, i, l, p, c) {
+  n = split(s, a, "\n"); c = 0
+  for (i = 1; i <= n; i++) {
+    l = a[i]; sub(/\r$/, "", l); sub(/^[ \t]+/, "", l)
+    p = index(l, "="); if (p < 2) continue
+    c++; K[c] = substr(l, 1, p - 1); R[c] = substr(l, p + 1)
+  }
+  return c
+}
+
+function readFile(path, f,   line, ln) {
+  ln = 0; lastPat = ""
+  while ((getline line < path) > 0) {
+    ln++; nLines++
+    sub(/\r$/, "", line)
+    if (line ~ START) record(line, f, ln)
+    else {
+      nCont++
+      # first line under an ERROR/WARN record: usually the exception, kept with its pattern
+      if (lastPat != "" && !(lastPat in PEX) && line ~ /[A-Za-z]/) { t = line; sub(/^[ \t]+/, "", t); PEX[lastPat] = substr(t, 1, 200) }
+    }
+  }
+  close(path)
+  Fl[f] = ln
+}
+
+function record(line, f, ln,   rest, i, p, val, time, level, msg, kind, tag, id, ms, k, r, s, j, pat, pk) {
+  nRec++; rest = line; time = ""; level = ""; msg = ""; lastPat = ""
+  for (i = 1; i <= nF; i++) {
+    if (i < nF) { p = index(rest, SEP); if (!p) { val = rest; rest = "" } else { val = substr(rest, 1, p - 1); rest = substr(rest, p + SEPL) } }
+    else val = rest
+    if (FN[i] == "time") time = val
+    else if (FN[i] == "level") { level = val; gsub(/[ \t]+/, "", level) }
+    else if (FN[i] == "message") msg = val
+  }
+  if (level != "") LV[level]++
+  ms = toMs(time)
+  if (ms != "") { if (minT == "" || ms < minMs) { minMs = ms; minT = time }; if (maxT == "" || ms > maxMs) { maxMs = ms; maxT = time } }
+  for (r = 1; r <= nRu; r++) if (msg ~ RUR[r]) { RC[r]++; if (!(r in RF)) { RF[r] = f; RL[r] = ln; RX[r] = substr(msg, 1, 300) } }
+  # correlation tag -> hop request / reply
+  kind = ""
+  for (i = 1; i <= nId; i++) if (match(msg, IDR[i])) { kind = IDK[i]; tag = substr(msg, RSTART, RLENGTH); s = substr(msg, RSTART + RLENGTH); break }
+  if (kind != "") {
+    TG[kind]++
+    id = kind SUBSEP tag
+    sub(/^[ \t]+/, "", s)
+    for (j = 1; j <= nSkip; j++) if (SKIP[j] != "" && substr(s, 1, length(SKIP[j])) == SKIP[j]) { s = ""; break }
+    if (s != "" && substr(s, 1, length(REQ)) == REQ) hopRequest(id, substr(s, length(REQ) + 1), ms, time, f, ln)
+    else if (s != "" && substr(s, 1, length(REP)) == REP) hopReply(id, substr(s, length(REP) + 1), ms, f, ln)
+  }
+  if (level in PATLV) {
+    pat = msg
+    if (kind != "") pat = s
+    gsub(/"[^"]*"/, "\"…\"", pat); gsub(/'[^']*'/, "'…'", pat)
+    gsub(/[0-9A-Za-z_.:\/-]*[0-9][0-9A-Za-z_.:\/-]*/, "#", pat)
+    gsub(/[ \t]+/, " ", pat); pat = substr(pat, 1, 160)
+    pk = level SUBSEP pat
+    if (!(pk in PC) && nPat >= MAXPAT) { patOver++; return }
+    if (!(pk in PC)) { nPat++; PO[nPat] = pk; PF[pk] = f; PL[pk] = ln; PX[pk] = substr(msg, 1, 300) }
+    PC[pk]++; lastPat = pk
+  }
+}
+
+# address, Sender->Receiver, payload
+function hopRequest(id, s, ms, time, f, ln,   p, addr, who, from, to, key) {
+  p = index(s, " "); addr = p ? substr(s, 1, p - 1) : s; s = p ? substr(s, p + 1) : ""
+  sub(/^[ \t]+/, "", s); p = index(s, " "); who = p ? substr(s, 1, p - 1) : s
+  p = index(who, "->"); if (p) { from = substr(who, 1, p - 1); to = substr(who, p + 2) } else { from = ""; to = who }
+  key = addr SUBSEP from SUBSEP to
+  if (!(key in HC)) { nKeys++; HO[nKeys] = key; HF[key] = f; HL[key] = ln; HT1[key] = time }
+  HC[key]++; HT2[key] = time; nHop++
+  PK[id] = key; PT[id] = ms
+}
+function hopReply(id, s, ms, f, ln,   p, st, key, d) {
+  p = index(s, " "); st = p ? substr(s, 1, p - 1) : s
+  if (!(id in PK)) { orphan++; return }
+  key = PK[id]; delete PK[id]
+  HR[key]++; HS[key SUBSEP st]++; if (!((key, "|") in HSL) || index(HSL[key, "|"], "," st ",") == 0) HSL[key, "|"] = HSL[key, "|"] "," st ","
+  if (PT[id] != "" && ms != "") { d = ms - PT[id]; if (d >= 0) { HD[key] += d; HDN[key]++; if (d > HM[key]) HM[key] = d } }
+  delete PT[id]
+  if (st !~ /^2/) { HE[key]++; if (!(key in HEF)) { HEF[key] = f; HEL[key] = ln } }
+}
+
+# "MM/DD HH:MM:SS.mmm" or "YYYY-MM-DD HH:MM:SS,mmm" -> milliseconds (only differences matter)
+function toMs(t,   d, hms, a, n, y, mo, dy, frac) {
+  if (!match(t, /[0-9][0-9]?:[0-9][0-9]:[0-9][0-9]([.,][0-9]+)?/)) return ""
+  hms = substr(t, RSTART, RLENGTH)
+  y = 0; mo = 0; dy = 0
+  if (match(t, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/)) { d = substr(t, RSTART, RLENGTH); y = substr(d, 1, 4) + 0; mo = substr(d, 6, 2) + 0; dy = substr(d, 9, 2) + 0 }
+  else if (match(t, /[0-9][0-9]?\/[0-9][0-9]?/)) { d = substr(t, RSTART, RLENGTH); n = split(d, a, "/"); mo = a[1] + 0; dy = a[2] + 0 }
+  frac = 0
+  if (match(hms, /[.,][0-9]+$/)) { frac = substr(hms, RSTART + 1, 3); while (length(frac) < 3) frac = frac "0"; frac += 0; hms = substr(hms, 1, RSTART - 1) }
+  n = split(hms, a, ":")
+  return ((((y * 12 + mo) * 31 + dy) * 24 + a[1]) * 60 + a[2]) * 60000 + a[3] * 1000 + frac
+}
+
+function writeJson(   i, k, a, n, x, st, sl, first) {
+  printf "{\"files\":[" > outfile
+  for (i = 1; i <= nFiles; i++) printf "%s{\"file\":\"%s\",\"bytes\":%s,\"lines\":%d}", (i > 1 ? "," : ""), jesc(Fs[i]), (Fb[i] ~ /^[0-9]+$/ ? Fb[i] : 0), Fl[i] > outfile
+  printf "],\"lines\":%d,\"records\":%d,\"cont\":%d,\"first\":\"%s\",\"last\":\"%s\",\"orphans\":%d,\"patOver\":%d,\"levels\":{", nLines, nRec, nCont, jesc(minT), jesc(maxT), orphan, patOver > outfile
+  first = 1; for (k in LV) { printf "%s\"%s\":%d", (first ? "" : ","), jesc(k), LV[k] > outfile; first = 0 }
+  printf "},\"tags\":{" > outfile
+  first = 1; for (k in TG) { printf "%s\"%s\":%d", (first ? "" : ","), jesc(k), TG[k] > outfile; first = 0 }
+  printf "},\"hops\":[" > outfile
+  for (i = 1; i <= nKeys; i++) {
+    k = HO[i]; split(k, a, SUBSEP)
+    st = ""; n = split(HSL[k, "|"], sl, ",")
+    for (x = 1; x <= n; x++) if (sl[x] != "") st = st (st == "" ? "" : ",") "\"" jesc(sl[x]) "\":" HS[k SUBSEP sl[x]]
+    printf "%s{\"a\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"n\":%d,\"replied\":%d,\"noReply\":%d,\"err\":%d,\"ms\":%.0f,\"msN\":%d,\"max\":%.0f,\"file\":%d,\"line\":%d,\"t1\":\"%s\",\"t2\":\"%s\",\"st\":{%s},\"errFile\":%d,\"errLine\":%d}", \
+      (i > 1 ? "," : ""), jesc(a[1]), jesc(a[2]), jesc(a[3]), HC[k], HR[k], HU[k], HE[k], HD[k], HDN[k], HM[k], HF[k], HL[k], jesc(HT1[k]), jesc(HT2[k]), st, HEF[k], HEL[k] > outfile
+  }
+  printf "],\"patterns\":[" > outfile
+  for (i = 1; i <= nPat; i++) {
+    k = PO[i]; split(k, a, SUBSEP)
+    printf "%s{\"level\":\"%s\",\"text\":\"%s\",\"n\":%d,\"file\":%d,\"line\":%d,\"ex\":\"%s\",\"exc\":\"%s\"}", (i > 1 ? "," : ""), jesc(a[1]), jesc(a[2]), PC[k], PF[k], PL[k], jesc(PX[k]), jesc(PEX[k]) > outfile
+  }
+  printf "],\"rules\":[" > outfile
+  for (i = 1; i <= nRu; i++) printf "%s{\"name\":\"%s\",\"re\":\"%s\",\"n\":%d,\"file\":%d,\"line\":%d,\"ex\":\"%s\"}", (i > 1 ? "," : ""), jesc(RUK[i]), jesc(RUR[i]), RC[i], RF[i], RL[i], jesc(RX[i]) > outfile
+  printf "]}" > outfile
+  close(outfile)
+}
+
+function jesc(s,   out, i, c, n) {
+  gsub(CTL, " ", s)
+  if (s !~ /[\\"<]/) return s
+  out = ""; n = length(s)
+  for (i = 1; i <= n; i++) {
+    c = substr(s, i, 1)
+    if (c == "\\") out = out "\\\\"
+    else if (c == "\"") out = out "\\\""
+    else if (c == "<" && substr(s, i + 1, 1) == "/") out = out "<\\"
+    else out = out c
+  }
+  return out
+}
+EOF_AWK_LOGS
+
+if [ -s "$TMP/logs.txt" ]; then
+  # mawk reads big logs about 5 times faster than gawk: use it unless AWK says otherwise
+  LOG_AWK="$AWK_BIN"
+  if [ -z "${AWK:-}" ] && command -v mawk >/dev/null 2>&1; then LOG_AWK=mawk; fi
+  echo "Reading the logs with $LOG_AWK ..." >&2
+  LC_ALL=C LOG_FIELDS="$LOG_FIELDS" LOG_SEP="$LOG_SEP" LOG_START="$LOG_START" LOG_IDS="$LOG_IDS" \
+    LOG_REQUEST="$LOG_REQUEST" LOG_REPLY="$LOG_REPLY" LOG_SKIP="$LOG_SKIP" \
+    LOG_PATTERN_LEVELS="$LOG_PATTERN_LEVELS" LOG_RULES="$LOG_RULES" \
+    "$LOG_AWK" -v loglist="$TMP/logs.txt" -v outfile="$TMP/logs.json" "$AWK_LOGS" < /dev/null
+else
+  printf 'null' > "$TMP/logs.json"
+fi
 
 # ---- assemble the HTML ---------------------------------------------------------
 html_head() {
@@ -1206,6 +1481,13 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 .fnames{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 8px}.chip.on{background:var(--acc);color:#fff;border-color:var(--acc)}
 .fstats{display:flex;flex-wrap:wrap;gap:6px 18px;margin:12px 0 0;color:var(--mute);font-size:13px}.fstats b{color:var(--ink)}
 .freach{display:flex;flex-wrap:wrap;gap:6px 16px}
+.seen,.nseen{display:inline-block;flex:none;font-size:10.5px;font-weight:600;line-height:1.5;padding:0 6px;border-radius:9px;white-space:nowrap;vertical-align:middle;font-family:system-ui,sans-serif}
+.seen{color:var(--ep);background:color-mix(in srgb,var(--ep) 13%,transparent)}.seen.serr{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.nseen{color:var(--mute);border:1px dashed var(--line)}
+.badge.nmap{color:var(--mute);border-style:dashed}.ltab td.bad,.st.bad{color:var(--warn);font-weight:600}
+.st{font:11.5px ui-monospace,SFMono-Regular,Menlo,monospace;padding:0 4px;border-radius:4px;background:var(--bg);white-space:nowrap}
+.lvl{white-space:nowrap}.lvl.lv-ERROR,.lvl.lv-ERROR b{color:var(--warn)}.lvl.lv-WARN,.lvl.lv-WARN b{color:var(--ev)}
+.lfiles{margin:10px 0 0}.lfiles summary{cursor:pointer}
 .gsp rect{fill:color-mix(in srgb,var(--sp) 22%,var(--panel));stroke:color-mix(in srgb,var(--sp) 55%,transparent);stroke-width:1}.gn .gsp text{fill:var(--sp);font-size:9.5px;font-weight:600;text-anchor:middle}
 </style></head><body>
 EOF_HTML_HEAD
@@ -1215,7 +1497,7 @@ cat <<'EOF_HTML_HEAD'
 <aside>
   <input id="q" placeholder="Search endpoint, event, class, method…   ( / )" autocomplete="off">
   <div id="chips"></div>
-  <div class="navtabs"><button id="tBrowse" class="on">Browse</button><button id="tGraph">Graph</button><button id="tFlows" title="Entry points and everything each one triggers">Flows</button><button id="tConn" hidden title="Links between components (pom.xml folders)">Connectivity</button><button id="tIssues">Issues</button></div>
+  <div class="navtabs"><button id="tBrowse" class="on">Browse</button><button id="tGraph">Graph</button><button id="tFlows" title="Entry points and everything each one triggers">Flows</button><button id="tLogs" hidden title="What the log files show: hops on the event bus, errors, rules">Logs</button><button id="tConn" hidden title="Links between components (pom.xml folders)">Connectivity</button><button id="tIssues">Issues</button></div>
   <div id="count"></div>
   <ul id="results"></ul>
 </aside>
@@ -1249,7 +1531,7 @@ const ORDER=['endpoint','event','handler','lambda','method','class'];
 const FWD={emits:'emits',handled_by:'handled by',calls:'calls',http:'calls over HTTP'},BWD={emits:'emitted by',handled_by:'triggered by',calls:'called by',http:'called over HTTP by'};
 const enabled=new Set(ORDER);let selected=null,view='browse';
 $('#meta').textContent=`${DATA.meta.files} files · ${DATA.nodes.length} nodes · ${DATA.edges.length} links · generated ${DATA.meta.generated}`;
-{const L=DATA.meta.logs||[];if(L.length){const s=document.createElement('span');const mb=L.reduce((a,l)=>a+l.bytes,0)/1048576;
+{const L=(typeof LOGS!=='undefined'&&LOGS&&LOGS.files)||[];if(L.length){const s=document.createElement('span');const mb=L.reduce((a,l)=>a+l.bytes,0)/1048576;
  s.textContent=` · ${L.length} log file${L.length>1?'s':''} (${mb<10?mb.toFixed(1):Math.round(mb)} MB)`;s.title=L.map(l=>l.file).join('\n');$('#meta').appendChild(s);}}
 // source location as plain text (file:line), easy to copy into the IDE
 function link(file,abs,line,text){if(!file)return'';
@@ -1276,6 +1558,22 @@ function compOf(n){if(!n||!n.file||n.kind==='event'||!COMPS.length)return null;i
  const c=COMPS.find(c=>c.dir===''||n.file===c.dir||n.file.startsWith(c.dir+'/'));const r=c?c.name:null;CMP.set(n.id,r);return r;}
 const USED_COMPS=new Set(DATA.nodes.map(compOf).filter(Boolean)),MULTI=USED_COMPS.size>1;
 const HAS_HTTP=DATA.edges.some(e=>e[2]==='http');
+// logs: hops on the event bus found in the log files, joined to the map. An event is matched by
+// its value (the hop's address), a handler by its class name (the hop's receiver).
+const HASLOGS=typeof LOGS!=='undefined'&&!!LOGS,HOPS=HASLOGS?LOGS.hops:[];
+const HOPA=new Map(),HOPAT=new Map();
+for(const h of HOPS){const a=HOPA.get(h.a)||{n:0,err:0,noReply:0};a.n+=h.n;a.err+=h.err;a.noReply+=h.noReply;HOPA.set(h.a,a);
+ const k=h.a+'\u0001'+h.to;HOPAT.set(k,(HOPAT.get(k)||0)+h.n);}
+const simpleCls=c=>String(c||'').split('.').pop().split('$')[0];
+const fmtN=n=>Number(n).toLocaleString('en-US');
+// "×N" when the logs show it, "never seen" for an event whose address is not in them
+function seenTag(n,parent){if(!HOPS.length||!n)return'';
+ if(n.kind==='event'&&n.value!=null&&!n.unres){const a=HOPA.get(n.value);
+  return a?`<span class="seen${a.err||a.noReply?' serr':''}" title="Seen ${fmtN(a.n)} times in the logs${a.err?' · '+fmtN(a.err)+' error replies':''}${a.noReply?' · '+fmtN(a.noReply)+' without reply':''}">×${fmtN(a.n)}</span>`
+   :'<span class="nseen" title="Its address never appears in the logs">never seen</span>';}
+ if(parent&&parent.kind==='event'&&parent.value!=null&&n.cls){const c=HOPAT.get(parent.value+'\u0001'+simpleCls(n.cls));
+  return c?`<span class="seen" title="${esc(simpleCls(n.cls))} received it ${fmtN(c)} times in the logs">×${fmtN(c)}</span>`:'';}
+ return'';}
 function cmpTag(n){const c=MULTI&&compOf(n);return c?`<span class="badge cmpb" title="Component (folder with a pom.xml)">▣ ${esc(c)}</span>`:'';}
 function sub(n){if(n.unres&&n.id.startsWith('unres:'))return (n.kind==='event'?'event name not known statically':'handler not found')+(n.file?' · '+n.file.split('/').pop()+':'+n.line:'');
  if(n.kind==='endpoint'&&n.path)return `${n.verb||''} ${n.path}`;
@@ -1291,19 +1589,19 @@ function renderList(){const toks=$('#q').value.toLowerCase().split(/\s+/).filter
  let r=DATA.nodes.filter(n=>enabled.has(n.kind)&&toks.every(t=>hay.get(n.id).includes(t)));
  r.sort((a,b)=>ORDER.indexOf(a.kind)-ORDER.indexOf(b.kind)||a.label.localeCompare(b.label));
  $('#count').textContent=r.length+' result(s)'+(r.length>400?' – showing 400':'');
- $('#results').innerHTML=r.slice(0,400).map(n=>{const sp=spOf(n);return `<li data-id="${esc(n.id)}" class="${n.id===selected?'sel':''}${sp?' sp':''}${n.unres?' unr':''}"${sp?` style="--sp:var(--sp${sp.i})"`:''}>${ic(n)}<div><div>${nameHtml(n)}</div><div class="sub">${esc(sub(n))}</div></div>${spTag(n)}</li>`;}).join('');}
+ $('#results').innerHTML=r.slice(0,400).map(n=>{const sp=spOf(n);return `<li data-id="${esc(n.id)}" class="${n.id===selected?'sel':''}${sp?' sp':''}${n.unres?' unr':''}"${sp?` style="--sp:var(--sp${sp.i})"`:''}>${ic(n)}<div><div>${nameHtml(n)}</div><div class="sub">${esc(sub(n))} ${seenTag(n)}</div></div>${spTag(n)}</li>`;}).join('');}
 $('#results').onclick=e=>{const li=e.target.closest('li');if(li)go(li.dataset.id);};
 $('#q').oninput=renderList;
 document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('#q')){e.preventDefault();$('#q').focus();$('#q').select();}});
 function go(id){location.hash=encodeURIComponent(id);}
 window.addEventListener('hashchange',fromHash);
-function fromHash(){const id=decodeURIComponent(location.hash.slice(1));if(id&&N.has(id)){if(view==='issues'||view==='conn'||view==='flows')setView('browse');select(id);}}
+function fromHash(){const id=decodeURIComponent(location.hash.slice(1));if(id&&N.has(id)){if(view==='issues'||view==='conn'||view==='flows'||view==='logs')setView('browse');select(id);}}
 // detail
 let dir='fwd',maxDepth=8;
 function select(id){selected=id;const n=N.get(id);renderList();
  if(view==='graph'){drawGraph(null,true);return;}
  const roles=(n.roles||[]).filter(r=>r!==n.kind).map(r=>`<span class="badge k-${r}">${r}</span>`).join(' ');
- $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${cmpTag(n)}${roles}</div>
+ $('#detail').innerHTML=`<div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${cmpTag(n)}${roles}${seenTag(n)}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.kind==='event'&&n.value!=null&&!n.label.startsWith('"')?`<code>"${esc(n.value)}"</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
  <div class="toolbar"><button class="btn" data-d="fwd">Trace forward ▶</button><button class="btn" data-d="bwd">◀ Trace back</button>
  <span class="sub">depth</span><select id="depth">${[2,3,4,6,8,12,20].map(d=>`<option ${d===maxDepth?'selected':''}>${d}</option>`).join('')}</select>
@@ -1337,7 +1635,7 @@ function drawTree(){document.querySelectorAll('[data-d]').forEach(b=>b.classList
  const t=$('#tree');t.innerHTML='';fill(t,selected,0,new Set([selected]));if(!t.children.length)t.innerHTML='<li class="sub">Nothing found in this direction.</li>';}
 function fill(ul,id,depth,path){for(const e of nextOf(id,dir)){const n=N.get(e.id);if(!n)continue;const li=document.createElement('li');
  const lab=(dir==='fwd'?FWD:BWD)[e.k]+(e.via?' (via calls)':'');
- const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm${n.unres?' unr':''}" data-id="${esc(n.id)}">${nameHtml(n)}</span>${spTag(n)}${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
+ const row=`<span class="row"><span class="elabel">${esc(lab)}</span>${ic(n)}<span class="nm${n.unres?' unr':''}" data-id="${esc(n.id)}">${nameHtml(n)}</span>${spTag(n)}${seenTag(n,dir==='fwd'?N.get(id):null)}${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code>`:''}${asTag(e)}${link(e.f,absOf(e.f),e.l)}</span>`;
  const kids=nextOf(e.id,dir);
  if(path.has(e.id)){li.className='leaf';li.innerHTML=row+' <span class="cyc">↻ cycle</span>';}
  else if(!kids.length){li.className='leaf';li.innerHTML=row;}
@@ -1359,7 +1657,7 @@ function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][
   if(!path.has(e.id))walk(e.id,depth+1,new Set([...path,e.id]));}};
  walk(id,0,new Set([id]));return lines.join('\n');}
 // issues
-function setView(v){view=v;$('#detail').classList.toggle('gview',v==='graph'||v==='conn');['Browse','Graph','Flows','Conn','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
+function setView(v){view=v;$('#detail').classList.toggle('gview',v==='graph'||v==='conn');['Browse','Graph','Flows','Logs','Conn','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
 $('#tBrowse').onclick=()=>{setView('browse');selected?select(selected):null;};
 $('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
  else $('#detail').innerHTML='<div class="empty">Pick an item on the left to center the graph on it.</div>';};
@@ -1744,7 +2042,7 @@ function drawFlow(id){flowSel=id;dir='fwd';const n=N.get(id),f=flows().find(x=>x
  // what the flow reaches, by kind
  const seen=new Set([id]),q=[id],got={};
  for(let i=0;i<q.length;i++)for(const e of OUT.get(q[i])||[]){if(seen.has(e.id)||!N.has(e.id))continue;seen.add(e.id);q.push(e.id);const m=N.get(e.id);(got[m.kind]||(got[m.kind]=[])).push(m);}
- const reached=['event','endpoint','handler','lambda'].filter(k=>got[k]).map(k=>`<div class="section"><h3>${KIND[k][1]}s reached (${got[k].length})</h3><div class="freach">${got[k].sort((a,b)=>a.label.localeCompare(b.label)).map(m=>`<span class="row">${ic(m)}<span class="nm${m.unres?' unr':''}" data-id="${esc(m.id)}">${nameHtml(m)}</span></span>`).join('')}</div></div>`).join('');
+ const reached=['event','endpoint','handler','lambda'].filter(k=>got[k]).map(k=>`<div class="section"><h3>${KIND[k][1]}s reached (${got[k].length})</h3><div class="freach">${got[k].sort((a,b)=>a.label.localeCompare(b.label)).map(m=>`<span class="row">${ic(m)}<span class="nm${m.unres?' unr':''}" data-id="${esc(m.id)}">${nameHtml(m)}</span>${seenTag(m)}</span>`).join('')}</div></div>`).join('');
  $('#detail').innerHTML=`<div class="toolbar" style="margin-top:0"><button class="btn" id="fback">◀ All entry points</button></div>
  <div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${cmpTag(n)}</div>
  <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
@@ -1765,10 +2063,60 @@ function drawFlow(id){flowSel=id;dir='fwd';const n=N.get(id),f=flows().find(x=>x
  $('#copy').onclick=()=>{navigator.clipboard.writeText(asText(id));$('#copy').textContent='Copied ✓';setTimeout(()=>$('#copy').textContent='Copy as text',1200);};
  $('#fgraph').onclick=()=>{setView('graph');go(id);if(selected===id)select(id);};
  tree();$('#detail').scrollTop=0;}
+// ---------------------------------------------------------------- logs
+// What the log files show, reduced by the script to counts: hops on the event bus (request ">>"
+// and reply "<<" under one tag), message patterns of the levels in LOG_PATTERN_LEVELS, LOG_RULES.
+if(HASLOGS)$('#tLogs').hidden=false;
+$('#tLogs').onclick=()=>{setView('logs');drawLogs();};
+let logQ='',logSort='n';
+const EVBYVAL=new Map();for(const n of DATA.nodes)if(n.kind==='event'&&n.value!=null&&!n.unres&&!EVBYVAL.has(n.value))EVBYVAL.set(n.value,n);
+// the event of a hop (by address) and its handler in the receiver class, if the map has them
+function hopMap(h){const ev=EVBYVAL.get(h.a);if(!ev)return{ev:null,hd:null};
+ const hd=(OUT.get(ev.id)||[]).map(e=>N.get(e.id)).find(m=>m&&simpleCls(m.cls)===h.to)||null;return{ev,hd};}
+function logLoc(i,l){const f=HASLOGS&&LOGS.files[i-1];return f?`<span class="lnk" title="${esc(f.file)}:${l}">${wb(f.file.split('/').pop()+':'+l)}</span>`:'';}
+const fmtMs=v=>v<1000?Math.round(v)+' ms':(v/1000).toFixed(v<10000?2:1)+' s';
+function drawLogs(){const L=LOGS,mb=L.files.reduce((a,f)=>a+f.bytes,0)/1048576;
+ const toks=logQ.toLowerCase().split(/\s+/).filter(Boolean);
+ const hops=L.hops.filter(h=>toks.every(t=>(h.a+' '+h.from+' '+h.to).toLowerCase().includes(t)));
+ const key={n:h=>h.n,err:h=>h.err+h.noReply,avg:h=>h.msN?h.ms/h.msN:0,max:h=>h.max}[logSort];
+ hops.sort(key?(a,b)=>key(b)-key(a)||a.a.localeCompare(b.a):(a,b)=>a.a.localeCompare(b.a)||a.to.localeCompare(b.to));
+ const never=[...EVBYVAL.values()].filter(n=>!HOPA.has(n.value)).sort((a,b)=>a.label.localeCompare(b.label));
+ const outside=new Set(L.hops.filter(h=>!EVBYVAL.has(h.a)).map(h=>h.a));
+ const hopRow=h=>{const {ev,hd}=hopMap(h),st=Object.entries(h.st).map(([s,c])=>`<span class="st${/^2/.test(s)?'':' bad'}" title="${fmtN(c)} replies with status ${esc(s)}">${esc(s)}${Object.keys(h.st).length>1?' ×'+fmtN(c):''}</span>`).join(' ');
+  return `<tr><td>${ev?`<span class="row">${ic(ev)}<span class="nm" data-id="${esc(ev.id)}"><code>${esc(h.a)}</code></span></span>${ev.label!=='"'+h.a+'"'?`<div class="sub">${esc(ev.label)}</div>`:''}`
+   :`<code>${esc(h.a)}</code> <span class="badge nmap" title="No event in the scanned code has this value">not in map</span>`}</td>
+  <td><span class="sub">${esc(h.from||'?')} →</span> ${hd?`<span class="nm" data-id="${esc(hd.id)}">${esc(h.to)}</span>`:esc(h.to)}${ev&&!hd?' <span class="badge nmap" title="The map has no handler of this event in that class">no handler in map</span>':''}</td>
+  <td class="num">${fmtN(h.n)}</td><td>${st}</td><td class="num">${h.msN?fmtMs(h.ms/h.msN):''}</td><td class="num">${h.msN?fmtMs(h.max):''}</td>
+  <td class="num${h.err?' bad':''}">${h.err?`<span title="First at ${esc(h.errFile?L.files[h.errFile-1].file+':'+h.errLine:'')}">${fmtN(h.err)}</span>`:''}</td><td class="num${h.noReply?' bad':''}">${h.noReply?fmtN(h.noReply):''}</td>
+  <td>${logLoc(h.file,h.line)}<div class="sub">${esc(h.t1)}${h.t2!==h.t1?' → '+esc(h.t2):''}</div></td></tr>`;};
+ const pats=L.patterns.slice().sort((a,b)=>b.n-a.n);
+ const lvls=Object.entries(L.levels).sort((a,b)=>b[1]-a[1]);
+ $('#detail').innerHTML=`<div class="title"><h2>Logs</h2><span class="sub">${L.files.length} file${L.files.length>1?'s':''} · ${mb<10?mb.toFixed(1):Math.round(mb)} MB · ${fmtN(L.lines)} lines · ${fmtN(L.records)} records${L.first?` · ${esc(L.first)} → ${esc(L.last)}`:''}</span></div>
+ <div class="fstats">${lvls.map(([l,c])=>`<span class="lvl lv-${esc(l)}"><b>${fmtN(c)}</b> ${esc(l)}</span>`).join('')}${Object.entries(L.tags).map(([t,c])=>`<span title="Lines with a [${esc(t)}-…] tag"><b>${fmtN(c)}</b> [${esc(t)}]</span>`).join('')}</div>
+ <details class="lfiles"><summary class="sub">Files read</summary><table>${L.files.map(f=>`<tr><td><code>${esc(f.file)}</code></td><td class="num">${fmtN(f.lines)} lines</td><td class="num">${(f.bytes/1048576).toFixed(1)} MB</td></tr>`).join('')}</table></details>
+ <div class="section"><h3>Hops on the event bus (${hops.length===L.hops.length?fmtN(L.hops.length):fmtN(hops.length)+' of '+fmtN(L.hops.length)})</h3>
+ <div class="help">One row per address and sender → receiver: how many requests, their replies, how long they took. Addresses are joined to the map's events by value, receivers to handler classes.</div>
+ ${L.hops.length?`<div class="toolbar"><input id="lq" class="fin" placeholder="Filter address, sender, receiver…" value="${esc(logQ)}" autocomplete="off">
+ <span class="sub">sort by</span><select id="lsort">${[['n','calls'],['err','errors'],['avg','average time'],['max','max time'],['a','address']].map(([v,t])=>`<option value="${v}" ${v===logSort?'selected':''}>${t}</option>`).join('')}</select></div>
+ <table class="ltab"><tr><th>Address</th><th>Sender → receiver</th><th class="num">Calls</th><th>Replies</th><th class="num">Avg</th><th class="num">Max</th><th class="num">Errors</th><th class="num" title="Requests with no reply in the logs">No reply</th><th>First seen</th></tr>
+ ${hops.slice(0,500).map(hopRow).join('')}</table>${hops.length>500?`<div class="sub">showing 500 of ${fmtN(hops.length)}: filter to narrow</div>`:''}
+ ${L.orphans?`<div class="help">${fmtN(L.orphans)} replies had no request in the logs read (it was in an older file).</div>`:''}`
+ :'<div class="sub">No hop found. If the logs have some, check LOG_IDS, LOG_REQUEST and LOG_REPLY in the CONFIG of the script.</div>'}</div>
+ ${L.hops.length?`<div class="section"><h3>Events never seen in the logs (${never.length})</h3><div class="help">No hop in the logs read has their value as address. Unused, or not used during the period the logs cover.</div>
+ ${never.length?`<table>${never.map(n=>`<tr><td><span class="row">${ic(n)}<span class="nm" data-id="${esc(n.id)}">${nameHtml(n)}</span></span></td><td><code>${esc(n.value)}</code></td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`).join('')}</table>`:'<div class="sub">none</div>'}</div>
+ <div class="section"><h3>Addresses not in the map (${outside.size})</h3><div class="help">Seen in the logs, but no event in the scanned code has this value: built at run time, from another service, or missed by the scan.</div>
+ ${outside.size?`<div class="freach">${[...outside].sort().map(a=>`<code>${esc(a)}</code>`).join('')}</div>`:'<div class="sub">none</div>'}</div>`:''}
+ <div class="section"><h3>Messages (${fmtN(pats.length)} patterns)</h3><div class="help">Messages of the levels in LOG_PATTERN_LEVELS, grouped: numbers, ids and quoted text become placeholders.</div>
+ ${pats.length?`<table class="ltab"><tr><th>Level</th><th>Message</th><th class="num">Count</th><th>First seen</th></tr>${pats.slice(0,300).map(p=>`<tr><td><span class="lvl lv-${esc(p.level)}">${esc(p.level)}</span></td><td><code title="${esc(p.ex)}">${esc(p.text)}</code>${p.exc?`<div class="sub">${esc(p.exc)}</div>`:''}</td><td class="num">${fmtN(p.n)}</td><td>${logLoc(p.file,p.line)}</td></tr>`).join('')}</table>
+ ${pats.length>300?`<div class="sub">showing the 300 most frequent</div>`:''}${L.patOver?`<div class="sub">${fmtN(L.patOver)} more records had too many different messages to keep</div>`:''}`:'<div class="sub">none</div>'}</div>
+ <div class="section"><h3>Rules (${L.rules.length})</h3><div class="help">LOG_RULES in the CONFIG of the script.</div>
+ ${L.rules.length?`<table class="ltab"><tr><th>Rule</th><th class="num">Count</th><th>Example</th></tr>${L.rules.map(r=>`<tr><td><b>${esc(r.name)}</b><div class="sub"><code>${esc(r.re)}</code></div></td><td class="num">${fmtN(r.n)}</td><td>${r.n?`<code>${esc(r.ex)}</code><div>${logLoc(r.file,r.line)}</div>`:''}</td></tr>`).join('')}</table>`:'<div class="sub">none</div>'}</div>`;
+ const lq=$('#lq');if(lq){lq.oninput=()=>{logQ=lq.value;const p=lq.selectionStart;drawLogs();const l2=$('#lq');l2.focus();l2.setSelectionRange(p,p);};
+  $('#lsort').onchange=e=>{logSort=e.target.value;drawLogs();};}}
 renderList();fromHash();
 </script></body></html>
 EOF_HTML_TAIL
 }
-{ html_head; cat "$TMP/graph.json"; html_tail; } > "$OUT"
+{ html_head; cat "$TMP/graph.json"; printf ';\nconst LOGS='; cat "$TMP/logs.json"; html_tail; } > "$OUT"
 if [ -n "$JSON_OUT" ]; then cp "$TMP/graph.json" "$JSON_OUT"; fi
 echo "Done. Open $OUT in a browser." >&2
