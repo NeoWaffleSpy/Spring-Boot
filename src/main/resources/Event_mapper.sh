@@ -9,6 +9,8 @@
 #     ./Event_mapper.sh /path/to/repo                    -> ./repo.html (folder name)
 #     ./Event_mapper.sh /path/to/repo out.html           -> out.html
 #     ./Event_mapper.sh /path/to/repo out.html graph.json  (+ raw graph data)
+#     ./Event_mapper.sh --logs /path/to/logs /path/to/repo  (+ *.log files, searched
+#                      recursively; the folder can be anywhere; repeat --logs for more)
 #
 #  It finds:
 #    * Endpoints       methods carrying an ENDPOINT_ANNOTATIONS annotation
@@ -22,6 +24,8 @@
 #                      implementations, so endpoint -> service -> emit chains
 #                      connect                                    -> "calls"
 #    * Blind spots     emit(variable) and handlers it couldn't resolve
+#    * Flows           every entry point (endpoints, events fired from outside,
+#                      code nothing in the scan calls) with all it triggers
 #
 #  It is a heuristic (tokenizer + brace matching), not a compiler.
 # =============================================================================
@@ -76,17 +80,40 @@ SPECIAL_DIRS="target=orange test=green"
 
 # 1 = follow plain method calls so chains connect; 0 = events only.
 FOLLOW_CALLS=1
+
+# Folders searched recursively for *.log files, space-separated (no spaces inside
+# a path here; use --logs for those). They can be outside the scanned folder.
+# --logs DIR on the command line adds to this list.
+LOG_DIRS=""
 # ============================ END CONFIG =====================================
 
 set -eu
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# =* CONFIG/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
-ROOT="${1:-}"
-OUT="${2:-}"
-JSON_OUT="${3:-}"
-if [ -z "$ROOT" ] || [ "$ROOT" = "-h" ] || [ "$ROOT" = "--help" ]; then usage; exit 0; fi
+POS=()
+LOG_LIST=()
+for d in $LOG_DIRS; do LOG_LIST+=("$d"); done
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    -l|--logs)
+      if [ $# -lt 2 ]; then echo "$1 needs a folder" >&2; exit 1; fi
+      LOG_LIST+=("$2"); shift 2 ;;
+    --logs=*) LOG_LIST+=("${1#--logs=}"); shift ;;
+    *) POS+=("$1"); shift ;;
+  esac
+done
+ROOT="${POS[0]:-}"
+OUT="${POS[1]:-}"
+JSON_OUT="${POS[2]:-}"
+if [ -z "$ROOT" ]; then usage; exit 0; fi
 if [ ! -d "$ROOT" ]; then echo "Not a directory: $ROOT" >&2; exit 1; fi
+if [ ${#LOG_LIST[@]} -gt 0 ]; then
+  for d in "${LOG_LIST[@]}"; do
+    if [ ! -d "$d" ]; then echo "Not a log folder: $d" >&2; exit 1; fi
+  done
+fi
 
 AWK_BIN="${AWK:-}"
 if [ -z "$AWK_BIN" ]; then
@@ -128,6 +155,21 @@ else
   COMPONENTS="$(cd "$ROOT_ABS" && find . -type f -name pom.xml -print)"
 fi
 [ -n "$COMPONENTS" ] && COMPONENTS="$(printf '%s\n' "$COMPONENTS" | sed -e 's|^\./||' -e 's|/*pom\.xml$||' -e 's|^$|.|' | sort -u | tr '\n' '|')"
+
+# ---- log files: *.log under each log folder, as "bytes<TAB>absolute path" --------
+: > "$TMP/logs.txt"
+if [ ${#LOG_LIST[@]} -gt 0 ]; then
+  for d in "${LOG_LIST[@]}"; do
+    dabs="$(cd "$d" && pwd -P)"
+    find "$dabs" -type f -name '*.log' -print | sort | while IFS= read -r f; do
+      b="$(wc -c < "$f" | tr -d ' ')"
+      shown="$f"
+      if command -v cygpath >/dev/null 2>&1; then shown="$(cygpath -m "$f")"; fi
+      printf '%s\t%s\n' "$b" "$shown"
+    done >> "$TMP/logs.txt"
+  done
+  echo "Found $(wc -l < "$TMP/logs.txt" | tr -d ' ') log files in ${#LOG_LIST[@]} folder(s)." >&2
+fi
 
 # ---- the analyser (awk) ------------------------------------------------------
 read -r -d '' AWK_PROG <<'EOF_AWK' || true
@@ -990,6 +1032,15 @@ function resolveAndWrite(   m, n, x, nn, arr, eid, kind, tg, targets, pr, left, 
     v = arr[x]; sub(/.*\//, "", v); if (arr[x] == ".") v = root_name
     printf "%s{\"dir\":\"%s\",\"name\":\"%s\"}", (first ? "" : ","), jesc(arr[x] == "." ? "" : arr[x]), jesc(v) > outfile; first = 0
   }
+  # log files found under the --logs folders: "bytes<TAB>path" per line
+  printf "],\"logs\":[" > outfile
+  first = 1
+  while ((getline v < loglist) > 0) {
+    p = index(v, "\t"); if (!p) continue
+    printf "%s{\"file\":\"%s\",\"bytes\":%s}", (first ? "" : ","), jesc(substr(v, p + 1)), (substr(v, 1, p - 1) ~ /^[0-9]+$/ ? substr(v, 1, p - 1) : 0) > outfile
+    first = 0
+  }
+  close(loglist)
   printf "]}," > outfile
   printf "\"edges\":[" > outfile
   first = 1; nEdges = 0
@@ -1050,7 +1101,7 @@ function jesc(s,   out, i, c, n) {
 EOF_AWK
 
 (cd "$ROOT_ABS" && LC_ALL=C "$AWK_BIN" \
-  -v listfile="$TMP/files.txt" -v outfile="$TMP/graph.json" -v root="$ROOT_LINK" \
+  -v listfile="$TMP/files.txt" -v outfile="$TMP/graph.json" -v root="$ROOT_LINK" -v loglist="$TMP/logs.txt" \
   -v generated="$(date '+%Y-%m-%dT%H:%M:%S')" -v special_dirs="$SPECIAL_DIRS" \
   -v emit_methods="$EMIT_METHODS" -v listen_methods="$LISTEN_METHODS" \
   -v listen_ann="$LISTEN_ANNOTATIONS" -v ev_keys="$EVENT_ANNOTATION_KEYS" \
@@ -1150,6 +1201,11 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);
 #results li.sp{background:color-mix(in srgb,var(--sp) 8%,transparent);box-shadow:inset 3px 0 0 color-mix(in srgb,var(--sp) 70%,transparent)}
 #results li.sp:hover,#results li.sp.sel{background:color-mix(in srgb,var(--sp) 8%,var(--hi))}#results li .sptag{margin-left:auto}
 .gn.sp .box{fill:color-mix(in srgb,var(--sp) 10%,var(--panel))}.gn.sp:hover .box,.gn.sp.ctr .box,.gn.sp.foc .box{fill:color-mix(in srgb,var(--sp) 12%,var(--hi))}
+.ftab tr[data-flow]{cursor:pointer}.ftab tr[data-flow]:hover td{background:var(--hi)}.ftab .fnm{font-weight:500}td.num,th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.fin{font:inherit;font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-width:220px}
+.fnames{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 8px}.chip.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.fstats{display:flex;flex-wrap:wrap;gap:6px 18px;margin:12px 0 0;color:var(--mute);font-size:13px}.fstats b{color:var(--ink)}
+.freach{display:flex;flex-wrap:wrap;gap:6px 16px}
 .gsp rect{fill:color-mix(in srgb,var(--sp) 22%,var(--panel));stroke:color-mix(in srgb,var(--sp) 55%,transparent);stroke-width:1}.gn .gsp text{fill:var(--sp);font-size:9.5px;font-weight:600;text-anchor:middle}
 </style></head><body>
 EOF_HTML_HEAD
@@ -1159,7 +1215,7 @@ cat <<'EOF_HTML_HEAD'
 <aside>
   <input id="q" placeholder="Search endpoint, event, class, method…   ( / )" autocomplete="off">
   <div id="chips"></div>
-  <div class="navtabs"><button id="tBrowse" class="on">Browse</button><button id="tGraph">Graph</button><button id="tConn" hidden title="Links between components (pom.xml folders)">Connectivity</button><button id="tIssues">Issues</button></div>
+  <div class="navtabs"><button id="tBrowse" class="on">Browse</button><button id="tGraph">Graph</button><button id="tFlows" title="Entry points and everything each one triggers">Flows</button><button id="tConn" hidden title="Links between components (pom.xml folders)">Connectivity</button><button id="tIssues">Issues</button></div>
   <div id="count"></div>
   <ul id="results"></ul>
 </aside>
@@ -1193,6 +1249,8 @@ const ORDER=['endpoint','event','handler','lambda','method','class'];
 const FWD={emits:'emits',handled_by:'handled by',calls:'calls',http:'calls over HTTP'},BWD={emits:'emitted by',handled_by:'triggered by',calls:'called by',http:'called over HTTP by'};
 const enabled=new Set(ORDER);let selected=null,view='browse';
 $('#meta').textContent=`${DATA.meta.files} files · ${DATA.nodes.length} nodes · ${DATA.edges.length} links · generated ${DATA.meta.generated}`;
+{const L=DATA.meta.logs||[];if(L.length){const s=document.createElement('span');const mb=L.reduce((a,l)=>a+l.bytes,0)/1048576;
+ s.textContent=` · ${L.length} log file${L.length>1?'s':''} (${mb<10?mb.toFixed(1):Math.round(mb)} MB)`;s.title=L.map(l=>l.file).join('\n');$('#meta').appendChild(s);}}
 // source location as plain text (file:line), easy to copy into the IDE
 function link(file,abs,line,text){if(!file)return'';
  return `<span class="lnk" title="${esc(file)}:${line}">${wb(text||(file.split('/').pop()+':'+line))}</span>`;}
@@ -1239,7 +1297,7 @@ $('#q').oninput=renderList;
 document.addEventListener('keydown',e=>{if(e.key==='/'&&document.activeElement!==$('#q')){e.preventDefault();$('#q').focus();$('#q').select();}});
 function go(id){location.hash=encodeURIComponent(id);}
 window.addEventListener('hashchange',fromHash);
-function fromHash(){const id=decodeURIComponent(location.hash.slice(1));if(id&&N.has(id)){if(view==='issues'||view==='conn')setView('browse');select(id);}}
+function fromHash(){const id=decodeURIComponent(location.hash.slice(1));if(id&&N.has(id)){if(view==='issues'||view==='conn'||view==='flows')setView('browse');select(id);}}
 // detail
 let dir='fwd',maxDepth=8;
 function select(id){selected=id;const n=N.get(id);renderList();
@@ -1301,7 +1359,7 @@ function asText(id){const lines=[];const n=N.get(id);lines.push(`${KIND[n.kind][
   if(!path.has(e.id))walk(e.id,depth+1,new Set([...path,e.id]));}};
  walk(id,0,new Set([id]));return lines.join('\n');}
 // issues
-function setView(v){view=v;$('#detail').classList.toggle('gview',v==='graph'||v==='conn');['Browse','Graph','Conn','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
+function setView(v){view=v;$('#detail').classList.toggle('gview',v==='graph'||v==='conn');['Browse','Graph','Flows','Conn','Issues'].forEach(x=>$('#t'+x).classList.toggle('on',v===x.toLowerCase()));}
 $('#tBrowse').onclick=()=>{setView('browse');selected?select(selected):null;};
 $('#tGraph').onclick=()=>{setView('graph');if(selected)drawGraph(null,true);
  else $('#detail').innerHTML='<div class="empty">Pick an item on the left to center the graph on it.</div>';};
@@ -1638,6 +1696,75 @@ function drawIssues(){const ev=DATA.nodes.filter(n=>n.kind==='event');
  <div class="section"><h3>Unresolved emissions / handlers (${DATA.unresolved.length})</h3><div class="help">Event name not statically known (variable) or handler not found. Add a pattern to the config, or check by hand.</div>
  ${DATA.unresolved.length?`<table>${DATA.unresolved.map(u=>`<tr><td>${link(u.file,absOf(u.file),u.line,u.file+':'+u.line)}</td><td><code>${esc(u.text)}</code></td></tr>`).join('')}</table>`:'<div class="sub">none 🎉</div>'}</div>
  <div class="section"><h3>Endpoints with no detected chain (${deadEp.length})</h3>${lst(deadEp)}</div>`;}
+// ---------------------------------------------------------------- flows
+// A flow is everything an entry point triggers. Entry points: endpoints (HTTP and addRoute), events
+// listened to but never emitted in the scanned code (they come from outside), and every other item
+// nothing in the scan leads to (methods a framework calls: consumers, timers, start()...).
+$('#tFlows').onclick=()=>{setView('flows');flowSel&&N.has(flowSel)?drawFlow(flowSel):drawFlows();};
+let FLOWS=null,flowSel=null,flowQ='',flowSort='steps',flowName='';
+// what an item triggers: steps reached, longest chain, events, handlers, HTTP calls
+function reachOf(id){const seen=new Set([id]),q=[[id,0]];const r={steps:0,depth:0,event:0,handler:0,http:0,cyc:false};
+ for(let i=0;i<q.length;i++){const [c,d]=q[i];if(d>r.depth)r.depth=d;
+  for(const e of OUT.get(c)||[]){if(!N.has(e.id))continue;if(e.k==='http')r.http++;if(e.id===id)r.cyc=true;
+   if(seen.has(e.id))continue;seen.add(e.id);r.steps++;const k=N.get(e.id).kind;if(k==='event')r.event++;else if(k==='handler')r.handler++;q.push([e.id,d+1]);}}
+ return r;}
+const memberOf=n=>String(n.label||'').replace(/\(\)$/,'').split('.').pop();
+function flows(){if(FLOWS)return FLOWS;const list=[];
+ for(const n of DATA.nodes){const ins=IN.get(n.id)||[],outs=OUT.get(n.id)||[];let group=null;
+  if(n.kind==='endpoint')group='endpoint';
+  else if(n.kind==='event'){if(outs.length&&!ins.some(e=>e.k==='emits'))group='external';}
+  else if(!ins.length&&outs.length)group='root';
+  if(group)list.push({id:n.id,group,...reachOf(n.id)});}
+ return FLOWS=list;}
+const FGROUPS=[['endpoint','Endpoints','HTTP endpoints and routes registered with addRoute.'],
+ ['external','Events from outside','Listened to, but nothing in the scanned code emits them: another service, a framework or a dynamic name (see Issues) fires them.'],
+ ['root','Other starting points','Nothing in the scanned code calls these. Real entry points are among them (event bus consumers, timers, start(), framework callbacks), with dead code and calls the scan could not resolve.']];
+function flowRow(f){const n=N.get(f.id);return `<tr data-flow="${esc(f.id)}"><td><span class="row">${ic(n)}<span class="fnm${n.unres?' unr':''}">${nameHtml(n)}</span>${spTag(n)}${cmpTag(n)}</span>${n.kind==='endpoint'&&n.path?`<div><code>${esc((n.verb||'')+' '+n.path)}</code></div>`:''}</td>
+ <td class="num">${f.steps}</td><td class="num">${f.event}</td><td class="num">${f.handler}</td><td class="num">${f.http||''}</td><td class="num">${f.depth}${f.cyc?' <span class="cyc" title="Leads back to itself">↻</span>':''}</td><td>${n.file?link(n.file,n.abs,n.line):''}</td></tr>`;}
+function drawFlows(){flowSel=null;const all=flows(),toks=flowQ.toLowerCase().split(/\s+/).filter(Boolean);
+ const keep=f=>toks.every(t=>hay.get(f.id).includes(t))&&(!flowName||f.group!=='root'||memberOf(N.get(f.id))===flowName);
+ const cmp=flowSort==='name'?(a,b)=>N.get(a.id).label.localeCompare(N.get(b.id).label):(a,b)=>b[flowSort]-a[flowSort]||N.get(a.id).label.localeCompare(N.get(b.id).label);
+ // names shared by several starting points hint at a framework entry point (start, handle...)
+ const names=new Map();for(const f of all)if(f.group==='root'){const m=memberOf(N.get(f.id));names.set(m,(names.get(m)||0)+1);}
+ const common=[...names].filter(x=>x[1]>1).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])).slice(0,30);
+ const head='<tr><th>Entry point</th><th class="num" title="Items reached">Steps</th><th class="num">Events</th><th class="num">Handlers</th><th class="num" title="HTTP calls">HTTP</th><th class="num" title="Longest chain">Depth</th><th>Where</th></tr>';
+ $('#detail').innerHTML=`<div class="title"><h2>Flows</h2><span class="sub">${all.length} entry points</span></div>
+ <div class="help">A flow is everything an entry point triggers, followed through calls, events and HTTP. Pick one to see its whole lifecycle.</div>
+ <div class="toolbar"><input id="fq" class="fin" placeholder="Filter entry points…" value="${esc(flowQ)}" autocomplete="off">
+ <span class="sub">sort by</span><select id="fsort">${[['steps','steps'],['depth','depth'],['event','events'],['http','HTTP calls'],['name','name']].map(([v,t])=>`<option value="${v}" ${v===flowSort?'selected':''}>${t}</option>`).join('')}</select></div>
+ ${FGROUPS.map(([g,title,help])=>{const rows=all.filter(f=>f.group===g&&keep(f)).sort(cmp),tot=all.filter(f=>f.group===g).length;
+  const chips=g==='root'&&common.length?`<div class="fnames"><span class="sub">Common names:</span> ${common.map(([m,c])=>`<span class="chip${m===flowName?' on':''}" data-fname="${esc(m)}">${esc(m)} ×${c}</span>`).join('')}</div>`:'';
+  return `<div class="section"><h3>${title} (${rows.length===tot?tot:rows.length+' of '+tot})</h3><div class="help">${help}</div>${chips}
+  ${rows.length?`<table class="ftab">${head}${rows.slice(0,500).map(flowRow).join('')}</table>${rows.length>500?`<div class="sub">showing 500 of ${rows.length}: filter to narrow</div>`:''}`:'<div class="sub">none</div>'}</div>`;}).join('')}`;
+ const fq=$('#fq');fq.oninput=()=>{flowQ=fq.value;const p=fq.selectionStart;drawFlows();const f2=$('#fq');f2.focus();f2.setSelectionRange(p,p);};
+ $('#fsort').onchange=e=>{flowSort=e.target.value;drawFlows();};
+ $('#detail').querySelectorAll('[data-fname]').forEach(c=>c.onclick=()=>{flowName=flowName===c.dataset.fname?'':c.dataset.fname;drawFlows();});
+ $('#detail').querySelectorAll('tr[data-flow]').forEach(tr=>tr.onclick=e=>{if(!e.target.closest('.lnk'))drawFlow(tr.dataset.flow);});}
+function drawFlow(id){flowSel=id;dir='fwd';const n=N.get(id),f=flows().find(x=>x.id===id)||{id,...reachOf(id)};
+ // what the flow reaches, by kind
+ const seen=new Set([id]),q=[id],got={};
+ for(let i=0;i<q.length;i++)for(const e of OUT.get(q[i])||[]){if(seen.has(e.id)||!N.has(e.id))continue;seen.add(e.id);q.push(e.id);const m=N.get(e.id);(got[m.kind]||(got[m.kind]=[])).push(m);}
+ const reached=['event','endpoint','handler','lambda'].filter(k=>got[k]).map(k=>`<div class="section"><h3>${KIND[k][1]}s reached (${got[k].length})</h3><div class="freach">${got[k].sort((a,b)=>a.label.localeCompare(b.label)).map(m=>`<span class="row">${ic(m)}<span class="nm${m.unres?' unr':''}" data-id="${esc(m.id)}">${nameHtml(m)}</span></span>`).join('')}</div></div>`).join('');
+ $('#detail').innerHTML=`<div class="toolbar" style="margin-top:0"><button class="btn" id="fback">◀ All entry points</button></div>
+ <div class="title">${ic(n)}<h2>${nameHtml(n)}</h2><span class="badge k-${n.kind}">${KIND[n.kind][1]}</span>${unrTag(n)}${spTag(n)}${cmpTag(n)}</div>
+ <div class="loc">${n.kind==='endpoint'&&n.path?`<code>${esc((n.verb||'')+' '+n.path)}</code> · `:''}${n.file?link(n.file,n.abs,n.line,n.file+':'+n.line):''}${n.cls?` <span class="sub">· ${esc(n.cls)}</span>`:''}</div>
+ <div class="fstats"><span><b>${f.steps}</b> steps</span><span><b>${f.event}</b> events</span><span><b>${f.handler}</b> handlers</span><span><b>${f.http}</b> HTTP calls</span><span>longest chain <b>${f.depth}</b></span>${f.cyc?'<span class="cyc">↻ leads back to itself</span>':''}</div>
+ <div class="toolbar"><span class="sub">depth</span><select id="depth">${[2,3,4,6,8,12,20].map(d=>`<option ${d===maxDepth?'selected':''}>${d}</option>`).join('')}</select>
+ <button class="btn" id="expand">Expand all</button><button class="btn" id="collapse">Collapse</button><button class="btn" id="copy">Copy as text</button>
+ <button class="btn" id="fgraph">Show in graph</button><label class="sub"><input type="checkbox" id="hideCalls"> events only</label></div>
+ <div class="help">The lifecycle, step by step: every path the code allows (all branches, every implementation of an interface).</div>
+ <ul class="tree" id="tree"></ul>${reached}`;
+ $('#fback').onclick=drawFlows;
+ const tree=()=>{const t=$('#tree');t.innerHTML='';fill(t,id,0,new Set([id]));if(!t.children.length)t.innerHTML='<li class="sub">It triggers nothing the scan could follow.</li>';
+  // open the first levels so the lifecycle reads at a glance (a level's children are built when it opens)
+  const openLv=(ul,lv)=>{if(!ul||!lv)return;const ds=[...ul.querySelectorAll(':scope>li>details')];ds.forEach(d=>d.open=true);
+   setTimeout(()=>ds.forEach(d=>openLv(d.querySelector(':scope>ul'),lv-1)),0);};
+  openLv(t,3);};
+ $('#depth').onchange=e=>{maxDepth=+e.target.value;tree();};
+ $('#expand').onclick=()=>expandAll($('#tree'),0);$('#collapse').onclick=tree;$('#hideCalls').onchange=tree;
+ $('#copy').onclick=()=>{navigator.clipboard.writeText(asText(id));$('#copy').textContent='Copied ✓';setTimeout(()=>$('#copy').textContent='Copy as text',1200);};
+ $('#fgraph').onclick=()=>{setView('graph');go(id);if(selected===id)select(id);};
+ tree();$('#detail').scrollTop=0;}
 renderList();fromHash();
 </script></body></html>
 EOF_HTML_TAIL
